@@ -25,9 +25,26 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 APP_ENV = os.getenv("APP_ENV", "development")
 DEBUG = os.getenv("DEBUG", "True").lower() in ("true", "1", "yes")
 
-# URL Redirection Analysis Settings
+# Image Upload & QR Scanner Settings
+MAX_UPLOAD_SIZE_MB = float(os.getenv("MAX_UPLOAD_SIZE_MB", "5.0"))
+SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg"]
+
+# URL Redirection & Static Analysis Settings
 URL_TIMEOUT = int(os.getenv("URL_TIMEOUT_SECONDS", "10"))
 MAX_REDIRECTS = int(os.getenv("MAX_REDIRECTS", "10"))
+
+# Heuristic Suspicious Indicators
+DEFAULT_SUSPICIOUS_KEYWORDS = [
+    "login", "verify", "account", "update", "banking", "secure", "wallet",
+    "signin", "confirm", "password", "authenticate", "recovery", "billing",
+    "free", "bonus", "reward", "claim", "support", "service", "appleid",
+    "paypal", "chase", "wellsfargo", "crypto", "binance", "metamask",
+]
+DEFAULT_SUSPICIOUS_TLDS = [
+    "tk", "ml", "ga", "cf", "gq", "top", "xyz", "work", "click", "buzz", "fit", "surf"
+]
+HEURISTIC_RISK_LOW_MAX = 30.0
+HEURISTIC_RISK_MED_MAX = 60.0
 
 # Machine Learning Classifier Constants
 DEFAULT_RF_MODEL_PATH = MODELS_DIR / "random_forest_model.pkl"
@@ -40,22 +57,21 @@ RISK_THRESHOLD_MEDIUM = 0.40
 
 # Reinforcement Learning (Q-Learning) Hyperparameters
 DEFAULT_Q_TABLE_PATH = MODELS_DIR / "q_table.json"
-RL_ACTIONS = ["ALLOW", "WARN_USER", "DEEP_INSPECT", "BLOCK"]
+DEFAULT_RL_METADATA_PATH = MODELS_DIR / "rl_metadata.json"
+RL_ACTIONS = ["ALLOW", "WARN", "BLOCK"]
 RL_LEARNING_RATE = float(os.getenv("RL_LEARNING_RATE", "0.1"))
-RL_DISCOUNT_FACTOR = float(os.getenv("RL_DISCOUNT_FACTOR", "0.95"))
-RL_EPSILON = float(os.getenv("RL_EPSILON", "0.10"))
+RL_DISCOUNT_FACTOR = float(os.getenv("RL_DISCOUNT_FACTOR", "0.90"))
+RL_EPSILON = float(os.getenv("RL_EPSILON", "0.20"))
 
 # Reward matrix for RL state-action outcomes
 RL_REWARDS = {
-    # (action, true_threat)
-    ("ALLOW", False): +1.0,         # Correctly allowed safe QR
-    ("ALLOW", True): -10.0,         # Catastrophic failure: allowed malware/phishing
-    ("WARN_USER", False): -0.5,     # Slight friction on safe URL
-    ("WARN_USER", True): +5.0,      # Helpful warning on suspicious URL
-    ("DEEP_INSPECT", False): -0.2,  # Latency cost on safe URL
-    ("DEEP_INSPECT", True): +3.0,   # Useful deep inspection
-    ("BLOCK", False): -5.0,         # False positive: user blocked from safe QR
-    ("BLOCK", True): +10.0          # Success: malicious attack neutralized
+    # (action, is_malicious)
+    ("ALLOW", False): +15.0,        # Correctly allowed safe URL
+    ("ALLOW", True): -100.0,        # Catastrophic failure: allowed malicious URL
+    ("WARN", False): -5.0,          # Minor friction on safe URL
+    ("WARN", True): +5.0,           # Warning on suspicious URL
+    ("BLOCK", False): -50.0,        # False positive: blocked benign URL
+    ("BLOCK", True): +25.0,         # Success: blocked malicious attack
 }
 
 
@@ -65,8 +81,10 @@ def is_supabase_configured() -> bool:
     Returns:
         bool: True if both SUPABASE_URL and SUPABASE_KEY are non-empty and non-placeholder.
     """
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    url = (SUPABASE_URL or "").strip()
+    key = (SUPABASE_KEY or "").strip()
+    if not url or not key:
         return False
-    if "your-project-id" in SUPABASE_URL or "your-supabase" in SUPABASE_KEY:
+    if "your-project-id" in url or "your-supabase" in key:
         return False
     return True
