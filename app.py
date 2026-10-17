@@ -281,13 +281,24 @@ with st.sidebar:
         st.warning("🟡 Supabase Not Configured (`.env`)")
     else:
         connected, conn_msg = database.test_connection()
+        key_role = database.get_key_role()
         if connected:
-            st.success("🟢 Supabase Connected & Ready")
-        elif "schema.sql" in conn_msg:
+            if key_role == "service_role":
+                st.success("🟢 Supabase Connected & Ready")
+                st.caption("🔒 Key Role: `service_role` (Privileged Backend Active)")
+            else:
+                st.warning("🟡 Supabase Connected (Anon Key Detected)")
+                st.caption("⚠️ Database writes will fail under Row Level Security. Add your rotated service-role key to `SUPABASE_KEY` in `.env`.")
+        elif "schema.sql" in conn_msg or "tables do not exist" in conn_msg.lower():
             st.warning("🟡 Supabase Connected (Tables Pending)")
             st.caption("Execute `supabase/schema.sql` in Supabase SQL Editor.")
+            if key_role != "service_role":
+                st.caption("⚠️ Note: Privileged backend writes require service-role key in `SUPABASE_KEY`.")
         else:
-            st.error(f"🔴 Supabase Error: {conn_msg[:50]}...")
+            safe_err = conn_msg[:80]
+            st.error(f"🔴 Supabase Error: {safe_err}...")
+
+
 
     st.divider()
 
@@ -745,10 +756,18 @@ with tab_scanner:
                                     f"— Audit log updated in `scan_history`, `threat_analysis`, and `prevention_decisions`."
                                 )
                             else:
-                                st.error(
-                                    "❌ **Database Write Failed:** Could not persist scan record. "
-                                    "Verify table schema and network connectivity in the System Diagnostics sidebar."
-                                )
+                                last_err = database.get_last_error()
+                                if last_err and last_err.get("guidance"):
+                                    st.error(f"❌ **Database Write Failed:** {last_err['guidance']}")
+                                    code_str = last_err.get("code") or "N/A"
+                                    table_str = last_err.get("table") or "unknown"
+                                    st.caption(f"PostgreSQL/PostgREST Code: `{code_str}` | Table: `public.{table_str}`")
+                                else:
+                                    st.error(
+                                        "❌ **Database Write Failed:** Could not persist scan record. "
+                                        "Verify table schema and network connectivity in the System Diagnostics sidebar."
+                                    )
+
 
                     # Reinforcement Learning Feedback Expander
                     with st.expander("💬 Submit Controlled Evaluation Feedback (RL Feedback)", expanded=False):
@@ -839,9 +858,19 @@ with tab_scanner:
                                 if fb_record:
                                     st.success("✅ **Feedback Logged:** Recorded in Supabase `rl_feedback` table for offline policy analysis.")
                                 else:
-                                    st.error("❌ Failed to log feedback in database.")
+                                    last_err = database.get_last_error()
+                                    if last_err and last_err.get("guidance"):
+                                        st.error(f"❌ **Failed to log feedback:** {last_err['guidance']}")
+                                        st.caption(f"Code: `{last_err.get('code')}` | Table: `public.{last_err.get('table')}`")
+                                    else:
+                                        st.error("❌ Failed to log feedback in database.")
                             else:
-                                st.warning("⚠️ Could not establish a parent scan record before logging feedback.")
+                                last_err = database.get_last_error()
+                                if last_err and last_err.get("guidance"):
+                                    st.warning(f"⚠️ Could not establish parent scan record: {last_err['guidance']}")
+                                else:
+                                    st.warning("⚠️ Could not establish a parent scan record before logging feedback.")
+
 
                 # 6. Extracted Lexical & Structural Features (15 Canonical Metrics)
                 st.markdown("#### 📊 Extracted URL Features (Scikit-Learn Ready)")
@@ -1023,14 +1052,15 @@ with tab_history:
         st.warning("⚠️ **Supabase Credentials Not Configured in `.env`**")
         st.info(
             "Persistent scan history is stored securely in Supabase PostgreSQL. "
-            "To activate persistent audit logging, configure `SUPABASE_URL` and `SUPABASE_KEY` in your project's `.env` file.\n\n"
+            "To activate persistent audit logging, configure your credentials in `.env`:\n\n"
             "**Setup Example (`.env`):**\n"
             "```bash\n"
             "SUPABASE_URL=https://your-project.supabase.co\n"
-            "SUPABASE_KEY=your-anon-or-service-key\n"
+            "SUPABASE_KEY=your-rotated-service-role-key\n"
             "```\n\n"
             "Once defined, restart Streamlit or refresh the application to view live database records."
         )
+
     else:
         is_conn, conn_msg = database.test_connection()
         if not is_conn:

@@ -11,6 +11,8 @@ Features graceful fallback handling for missing credentials, network timeouts,
 and PostgreSQL/PostgREST errors without crashing or falling back to SQLite.
 """
 
+import base64
+import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,6 +26,185 @@ if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 _client_instance: Optional[Client] = None
+_client_role: Optional[str] = None
+_last_db_error: Optional[Dict[str, Any]] = None
+
+
+def get_last_error() -> Optional[Dict[str, Any]]:
+    """Retrieve the most recent database error metadata."""
+    return _last_db_error
+
+
+def clear_last_error() -> None:
+    """Clear any stored database error metadata."""
+    global _last_db_error
+    _last_db_error = None
+
+
+def get_key_role(key: Optional[str] = None) -> str:
+    """Determine the role of a Supabase API key ('anon', 'service_role', or 'unknown').
+
+    Inspects prefixes and JWT claims without external network calls or exposing keys.
+    If key is None, inspects SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY fallback).
+
+    Returns:
+        str: 'anon', 'service_role', or 'unknown'
+    """
+    if key is None:
+        target = (config.SUPABASE_KEY or getattr(config, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+    else:
+        target = key.strip()
+
+    if not target:
+        return "unknown"
+
+    # Support modern Supabase API key prefixes
+    if target.startswith("sb_secret_"):
+        return "service_role"
+    if target.startswith("sb_publishable_"):
+        return "anon"
+
+    # Support standard JWT tokens
+    if target.count(".") == 2:
+        try:
+            payload_b64 = target.split(".")[1]
+            padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+            data = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+            role = str(data.get("role", "unknown")).lower()
+            if role in ("service_role", "anon"):
+                return role
+            return role
+        except Exception:
+            return "unknown"
+    return "unknown"
+
+
+def _handle_db_error(
+    exc: Exception,
+    operation: str,
+    table: str,
+    record: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Extract and format structured error information without credentials.
+
+    Logs full diagnostic details to the terminal including error message, error code,
+    constraint details, and actionable guidance without exposing API keys.
+    """
+    global _last_db_error
+    import re
+
+    err_code = None
+    err_msg = str(exc)
+    err_details = None
+    err_hint = None
+
+    if isinstance(exc, APIError):
+        err_code = getattr(exc, "code", None)
+        err_msg = getattr(exc, "message", str(exc))
+        err_details = getattr(exc, "details", None)
+        err_hint = getattr(exc, "hint", None)
+        if hasattr(exc, "args") and exc.args and isinstance(exc.args[0], dict):
+            d = exc.args[0]
+            err_code = err_code or d.get("code")
+            err_msg = d.get("message", err_msg)
+            err_details = err_details or d.get("details")
+            err_hint = err_hint or d.get("hint")
+
+    # Sanitize known secrets from error messages and details
+    for secret in [getattr(config, "SUPABASE_SERVICE_ROLE_KEY", ""), config.SUPABASE_KEY, config.SUPABASE_URL]:
+        if secret and len(secret) > 8:
+            err_msg = err_msg.replace(secret, "[REDACTED]")
+            if err_details:
+                err_details = str(err_details).replace(secret, "[REDACTED]")
+
+    # Redact any Bearer headers, JWTs, and Supabase key strings with regex
+    err_msg = re.sub(r"eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+", "[REDACTED_TOKEN]", err_msg)
+    err_msg = re.sub(r"sb_[a-zA-Z0-9_-]{20,}", "[REDACTED_KEY]", err_msg)
+    err_msg = re.sub(r"Bearer\s+[^\s\"']+", "Bearer [REDACTED]", err_msg, flags=re.IGNORECASE)
+
+    if err_details:
+        err_details = re.sub(r"eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+", "[REDACTED_TOKEN]", str(err_details))
+        err_details = re.sub(r"sb_[a-zA-Z0-9_-]{20,}", "[REDACTED_KEY]", str(err_details))
+        err_details = re.sub(r"Bearer\s+[^\s\"']+", "Bearer [REDACTED]", str(err_details), flags=re.IGNORECASE)
+
+    msg_lower = err_msg.lower()
+    if err_code is None and ("row-level security" in msg_lower or "service_role" in msg_lower or "42501" in msg_lower):
+        err_code = "42501"
+
+    code_str = str(err_code or "").upper()
+    guidance = None
+
+    if "supabase_service_role_key is missing" in msg_lower:
+        guidance = (
+            "SUPABASE_SERVICE_ROLE_KEY is missing in .env (or SUPABASE_KEY contains an unprivileged anon key). "
+            f"Row Level Security (RLS) policy rejected operation on 'public.{table}' (Error 42501). "
+            "Privileged backend database writes require the server-side service_role secret. "
+            "Please configure SUPABASE_KEY in your local .env file with your rotated service-role key."
+        )
+    elif (
+        code_str == "42501"
+        or "row-level security" in msg_lower
+        or "permission denied" in msg_lower
+        or "service_role" in msg_lower
+    ):
+        guidance = (
+            f"Row Level Security (RLS) policy rejected operation on 'public.{table}' (Error 42501). "
+            "Privileged backend database writes require the server-side service_role secret. "
+            "Ensure the server-side SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY) is configured in your local .env file."
+        )
+    elif (
+        code_str == "PGRST205"
+        or "could not find the table" in msg_lower
+        or ("relation" in msg_lower and "does not exist" in msg_lower)
+    ):
+        guidance = (
+            f"Table 'public.{table}' does not exist in the Supabase schema cache (Error PGRST205). "
+            "Please execute 'supabase/schema.sql' in the Supabase SQL Editor to initialize the database tables."
+        )
+    elif code_str == "23503" or "foreign key" in msg_lower:
+        guidance = (
+            f"Foreign key constraint violation on 'public.{table}' (Error 23503). "
+            "The referenced parent record (scan_id) does not exist."
+        )
+    elif code_str == "23514" or "check constraint" in msg_lower:
+        guidance = (
+            f"CHECK constraint violation on 'public.{table}' (Error 23514). "
+            "One or more column values violate the table schema constraints."
+        )
+    elif code_str == "23505" or "duplicate key" in msg_lower:
+        guidance = (
+            f"Duplicate key violation on 'public.{table}' (Error 23505). Record already exists."
+        )
+    elif "connection" in msg_lower or "timeout" in msg_lower:
+        guidance = (
+            "Network connectivity failure connecting to Supabase. "
+            "Check your internet connection and verify SUPABASE_URL in .env."
+        )
+    else:
+        guidance = f"Database error during {operation} on 'public.{table}': {err_msg}"
+
+    error_summary = {
+        "operation": operation,
+        "table": table,
+        "code": err_code,
+        "message": err_msg,
+        "details": err_details,
+        "hint": err_hint,
+        "guidance": guidance,
+    }
+
+    _last_db_error = error_summary
+
+    log_line = f"❌ [Database Error] Op={operation} | Table={table} | Code={err_code} | Msg={err_msg}"
+    if err_details:
+        log_line += f" | Details={err_details}"
+    if err_hint:
+        log_line += f" | Hint={err_hint}"
+    logger.error(log_line)
+    if guidance:
+        logger.error(f"👉 Guidance: {guidance}")
+
+    return error_summary
 
 
 def is_database_configured() -> bool:
@@ -39,44 +220,102 @@ def get_supabase_client(
     supabase_url: Optional[str] = None,
     supabase_key: Optional[str] = None,
     force_new: bool = False,
+    require_service_role: bool = False,
 ) -> Optional[Client]:
     """Initialize and return the official Supabase Python client instance.
 
-    Uses configured environment variables by default. Caches the client instance
-    as a singleton unless force_new is True.
+    Uses configured environment variables SUPABASE_URL and SUPABASE_KEY by default.
+    Keeps the privileged client strictly within the trusted Python backend.
 
     Args:
         supabase_url: Optional custom URL override.
         supabase_key: Optional custom API key override.
         force_new: If True, bypasses the cached singleton client.
+        require_service_role: If True, rejects keys confirmed to have only 'anon' privileges.
 
     Returns:
-        Optional[Client]: The connected Supabase client, or None if credentials are missing/invalid.
+        Optional[Client]: The connected Supabase client, or None if credentials are missing or inadequate.
     """
-    global _client_instance
+    global _client_instance, _client_role
 
-    if _client_instance is not None and not force_new and supabase_url is None and supabase_key is None:
-        return _client_instance
+    # If key is provided explicitly
+    if supabase_key is not None:
+        url = (supabase_url or config.SUPABASE_URL).strip()
+        key = supabase_key.strip()
+        if not url or not key:
+            return None
+        role = get_key_role(key)
+        if require_service_role and role == "anon":
+            logger.error("Explicit Supabase API key does not have service_role privileges.")
+            return None
+        try:
+            return create_client(url, key)
+        except Exception as exc:
+            logger.error(f"Failed to initialize Supabase client with custom key: {exc}")
+            return None
+
+    # Check cached singleton if applicable
+    if _client_instance is not None and not force_new and supabase_url is None:
+        if require_service_role and _client_role == "anon":
+            pass
+        else:
+            return _client_instance
 
     url = (supabase_url or config.SUPABASE_URL).strip()
-    key = (supabase_key or config.SUPABASE_KEY).strip()
+    srv_key = getattr(config, "SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    pub_key = (config.SUPABASE_KEY or "").strip()
 
-    if not url or not key:
-        logger.warning("Supabase URL or API key is not configured. Database operations will be disabled.")
+    chosen_key = None
+    chosen_role = "unknown"
+
+    # Prioritize service_role key if available in SUPABASE_KEY or SUPABASE_SERVICE_ROLE_KEY
+    if pub_key and "your-supabase" not in pub_key:
+        pub_role = get_key_role(pub_key)
+        if pub_role == "service_role":
+            chosen_key = pub_key
+            chosen_role = "service_role"
+        elif srv_key and "your-supabase" not in srv_key and get_key_role(srv_key) == "service_role":
+            chosen_key = srv_key
+            chosen_role = "service_role"
+        elif not require_service_role:
+            chosen_key = pub_key
+            chosen_role = pub_role
+        else:
+            chosen_key = pub_key
+            chosen_role = pub_role
+    elif srv_key and "your-supabase" not in srv_key:
+        chosen_key = srv_key
+        chosen_role = get_key_role(srv_key)
+    else:
+        chosen_key = ""
+        chosen_role = "unknown"
+
+    if not url or not chosen_key:
+        logger.warning("Supabase URL or required API key is not configured. Database operations will be disabled.")
         return None
 
-    if "your-project-id" in url or "your-supabase" in key:
+    if "your-project-id" in url or "your-supabase" in chosen_key:
         logger.warning("Default placeholder credentials detected in Supabase config. Please provide real credentials.")
         return None
 
+    if require_service_role and chosen_role == "anon":
+        logger.error(
+            "SUPABASE_KEY has 'anon' role. Under Row Level Security (RLS), "
+            "privileged database writes require the server-side service_role key."
+        )
+        return None
+
     try:
-        client = create_client(url, key)
-        if not force_new and supabase_url is None and supabase_key is None:
+        client = create_client(url, chosen_key)
+        if not force_new and supabase_url is None:
             _client_instance = client
+            _client_role = chosen_role
         return client
     except Exception as exc:
         logger.error(f"Failed to initialize Supabase client: {exc}", exc_info=True)
         return None
+
+
 
 
 def test_connection(client: Optional[Client] = None) -> Tuple[bool, str]:
@@ -107,6 +346,15 @@ def test_connection(client: Optional[Client] = None) -> Tuple[bool, str]:
                 "Connected to Supabase project, but tables do not exist yet. "
                 "Please run supabase/schema.sql in the Supabase SQL Editor."
             )
+        if (
+            "42501" in err_msg
+            or "row-level security" in err_msg.lower()
+            or "permission denied" in err_msg.lower()
+        ):
+            return False, (
+                "Connected to Supabase, but Row Level Security (RLS) denied access. "
+                "Ensure your .env file uses the server-side service_role key."
+            )
         logger.error(f"Supabase APIError during connection test: {api_err}")
         return False, f"Supabase API Error: {api_err}"
     except Exception as exc:
@@ -133,10 +381,24 @@ def insert_scan_record(
     Returns:
         Optional[Dict[str, Any]]: The inserted row data containing the generated UUID, or None on failure.
     """
-    active_client = client or get_supabase_client()
+    active_client = client or get_supabase_client(require_service_role=True)
     if active_client is None:
-        logger.warning("Cannot insert scan record: Supabase is not configured.")
+        logger.warning("Cannot insert scan record: Privileged Supabase client is not available.")
+        if not config.is_supabase_configured():
+            _handle_db_error(Exception("Supabase credentials not configured in environment"), "INSERT", "scan_history")
+        else:
+            _handle_db_error(
+                Exception(
+                    "SUPABASE_SERVICE_ROLE_KEY is missing in .env. "
+                    "Row Level Security (RLS) policy rejected operation on 'public.scan_history' (Error 42501). "
+                    "Privileged backend database writes require the server-side service_role key. "
+                    "Please configure SUPABASE_KEY in your local .env file with your rotated service-role key."
+                ),
+                "INSERT",
+                "scan_history",
+            )
         return None
+
 
     valid_payload_types = {"URL", "TEXT", "WIFI", "VCARD", "OTHER"}
     if qr_payload_type not in valid_payload_types:
@@ -160,12 +422,13 @@ def insert_scan_record(
             inserted = response.data[0]
             logger.info(f"Recorded scan {inserted.get('id')} for payload: {extracted_url}")
             return inserted
+        _handle_db_error(Exception("Insert returned empty data array"), "INSERT", "scan_history", record)
         return None
     except APIError as api_err:
-        logger.error(f"Database error inserting scan record: {api_err}")
+        _handle_db_error(api_err, "INSERT", "scan_history", record)
         return None
     except Exception as exc:
-        logger.error(f"Unexpected error inserting scan record: {exc}", exc_info=True)
+        _handle_db_error(exc, "INSERT", "scan_history", record)
         return None
 
 
@@ -197,10 +460,10 @@ def get_recent_scans(
         )
         return response.data or []
     except APIError as api_err:
-        logger.error(f"Database error fetching recent scans: {api_err}")
+        _handle_db_error(api_err, "SELECT", "scan_history")
         return []
     except Exception as exc:
-        logger.error(f"Unexpected error fetching recent scans: {exc}", exc_info=True)
+        _handle_db_error(exc, "SELECT", "scan_history")
         return []
 
 
@@ -225,10 +488,23 @@ def insert_threat_analysis(
     Returns:
         Optional[Dict[str, Any]]: The inserted row data, or None on failure.
     """
-    active_client = client or get_supabase_client()
+    active_client = client or get_supabase_client(require_service_role=True)
     if active_client is None:
-        logger.warning("Cannot insert threat analysis: Supabase is not configured.")
+        logger.warning("Cannot insert threat analysis: Privileged Supabase client is not available.")
+        if not config.is_supabase_configured():
+            _handle_db_error(Exception("Supabase credentials not configured in environment"), "INSERT", "threat_analysis")
+        else:
+            _handle_db_error(
+                Exception(
+                    "Row Level Security (RLS) policy rejected operation on 'public.threat_analysis' (Error 42501). "
+                    "Privileged backend database writes require the server-side service_role key. "
+                    "Please configure SUPABASE_KEY in your local .env file with your rotated service-role key."
+                ),
+                "INSERT",
+                "threat_analysis",
+            )
         return None
+
 
     # Sanitize and normalize inputs
     norm_class = str(predicted_class).upper().strip()
@@ -256,12 +532,13 @@ def insert_threat_analysis(
             inserted = response.data[0]
             logger.info(f"Recorded threat analysis {inserted.get('id')} for scan {scan_id}")
             return inserted
+        _handle_db_error(Exception("Insert returned empty data array"), "INSERT", "threat_analysis", record)
         return None
     except APIError as api_err:
-        logger.error(f"Database error inserting threat analysis: {api_err}")
+        _handle_db_error(api_err, "INSERT", "threat_analysis", record)
         return None
     except Exception as exc:
-        logger.error(f"Unexpected error inserting threat analysis: {exc}", exc_info=True)
+        _handle_db_error(exc, "INSERT", "threat_analysis", record)
         return None
 
 
@@ -284,10 +561,23 @@ def insert_prevention_decision(
     Returns:
         Optional[Dict[str, Any]]: The inserted row data, or None on failure.
     """
-    active_client = client or get_supabase_client()
+    active_client = client or get_supabase_client(require_service_role=True)
     if active_client is None:
-        logger.warning("Cannot insert prevention decision: Supabase is not configured.")
+        logger.warning("Cannot insert prevention decision: Privileged Supabase client is not available.")
+        if not config.is_supabase_configured():
+            _handle_db_error(Exception("Supabase credentials not configured in environment"), "INSERT", "prevention_decisions")
+        else:
+            _handle_db_error(
+                Exception(
+                    "Row Level Security (RLS) policy rejected operation on 'public.prevention_decisions' (Error 42501). "
+                    "Privileged backend database writes require the server-side service_role key. "
+                    "Please configure SUPABASE_KEY in your local .env file with your rotated service-role key."
+                ),
+                "INSERT",
+                "prevention_decisions",
+            )
         return None
+
 
     normalized_action = selected_action.upper().strip()
     if normalized_action == "WARN":
@@ -310,12 +600,13 @@ def insert_prevention_decision(
             inserted = response.data[0]
             logger.info(f"Recorded prevention decision {inserted.get('id')} ({normalized_action}) for scan {scan_id}")
             return inserted
+        _handle_db_error(Exception("Insert returned empty data array"), "INSERT", "prevention_decisions", record)
         return None
     except APIError as api_err:
-        logger.error(f"Database error inserting prevention decision: {api_err}")
+        _handle_db_error(api_err, "INSERT", "prevention_decisions", record)
         return None
     except Exception as exc:
-        logger.error(f"Unexpected error inserting prevention decision: {exc}", exc_info=True)
+        _handle_db_error(exc, "INSERT", "prevention_decisions", record)
         return None
 
 
@@ -340,10 +631,23 @@ def insert_rl_feedback(
     Returns:
         Optional[Dict[str, Any]]: The inserted row data, or None on failure.
     """
-    active_client = client or get_supabase_client()
+    active_client = client or get_supabase_client(require_service_role=True)
     if active_client is None:
-        logger.warning("Cannot insert RL feedback: Supabase is not configured.")
+        logger.warning("Cannot insert RL feedback: Privileged Supabase client is not available.")
+        if not config.is_supabase_configured():
+            _handle_db_error(Exception("Supabase credentials not configured in environment"), "INSERT", "rl_feedback")
+        else:
+            _handle_db_error(
+                Exception(
+                    "Row Level Security (RLS) policy rejected operation on 'public.rl_feedback' (Error 42501). "
+                    "Privileged backend database writes require the server-side service_role key. "
+                    "Please configure SUPABASE_KEY in your local .env file with your rotated service-role key."
+                ),
+                "INSERT",
+                "rl_feedback",
+            )
         return None
+
 
     normalized_action = selected_action.upper().strip()
     if normalized_action == "WARN":
@@ -372,12 +676,13 @@ def insert_rl_feedback(
             inserted = response.data[0]
             logger.info(f"Recorded RL feedback {inserted.get('id')} (Reward: {reward}) for scan {scan_id}")
             return inserted
+        _handle_db_error(Exception("Insert returned empty data array"), "INSERT", "rl_feedback", record)
         return None
     except APIError as api_err:
-        logger.error(f"Database error inserting RL feedback: {api_err}")
+        _handle_db_error(api_err, "INSERT", "rl_feedback", record)
         return None
     except Exception as exc:
-        logger.error(f"Unexpected error inserting RL feedback: {exc}", exc_info=True)
+        _handle_db_error(exc, "INSERT", "rl_feedback", record)
         return None
 
 
@@ -386,17 +691,18 @@ def save_complete_scan(
     qr_payload_type: str,
     predicted_class: str,
     risk_score: float,
-    detected_indicators: Optional[List[str]],
-    selected_action: str,
-    decision_reason: str,
+    detected_indicators: Optional[List[str]] = None,
+    selected_action: str = "WARN_USER",
+    decision_reason: str = "Automated threat evaluation",
     scan_id: Optional[str] = None,
     model_version: str = "v1.0.0",
     policy_version: str = "v1.0.0",
     client: Optional[Client] = None,
+
 ) -> Optional[Dict[str, Any]]:
     """Save complete scan results across scan_history, threat_analysis, and prevention_decisions.
 
-    Enforces idempotency if a scan_id is provided.
+    Enforces atomicity and idempotency if a scan_id is provided.
 
     Args:
         extracted_url: Decoded URL or text from QR.
@@ -414,10 +720,25 @@ def save_complete_scan(
     Returns:
         Optional[Dict[str, Any]]: Consolidated inserted records or None on failure.
     """
-    active_client = client or get_supabase_client()
+    clear_last_error()
+    active_client = client or get_supabase_client(require_service_role=True)
     if active_client is None:
-        logger.warning("Cannot save complete scan: Supabase is not configured.")
+        logger.warning("Cannot save complete scan: Privileged Supabase client is not available.")
+        if not config.is_supabase_configured():
+            _handle_db_error(Exception("Supabase credentials not configured in environment"), "SAVE_COMPLETE_SCAN", "all")
+        else:
+            _handle_db_error(
+                Exception(
+                    "SUPABASE_SERVICE_ROLE_KEY is missing in .env. "
+                    "Row Level Security (RLS) policy rejected operation on 'public.scan_history' (Error 42501). "
+                    "Privileged backend database writes require the server-side service_role key. "
+                    "Please configure SUPABASE_KEY in your local .env file with your rotated service-role key."
+                ),
+                "SAVE_COMPLETE_SCAN",
+                "all",
+            )
         return None
+
 
     # 1. Insert scan_history
     scan_record = insert_scan_record(
@@ -446,6 +767,9 @@ def save_complete_scan(
         model_version=model_version,
         client=active_client,
     )
+    if not threat_record:
+        logger.error(f"Failed to insert threat_analysis record for scan {assigned_scan_id}.")
+        return None
 
     # 3. Insert prevention_decisions
     decision_record = insert_prevention_decision(
@@ -455,6 +779,9 @@ def save_complete_scan(
         policy_version=policy_version,
         client=active_client,
     )
+    if not decision_record:
+        logger.error(f"Failed to insert prevention_decisions record for scan {assigned_scan_id}.")
+        return None
 
     return {
         "scan_id": assigned_scan_id,
@@ -517,6 +844,7 @@ def get_detailed_scan_history(
                 "status": row.get("scan_status", "PENDING"),
                 "predicted_class": threat.get("predicted_class", "N/A"),
                 "risk_score": threat.get("risk_score"),
+                "detected_indicators": threat.get("detected_indicators") or [],
                 "model_version": threat.get("model_version", "N/A"),
                 "prevention_action": action_val,
                 "decision_reason": decision.get("decision_reason", "N/A"),
@@ -536,6 +864,7 @@ def get_detailed_scan_history(
                     "status": s.get("scan_status", "PENDING"),
                     "predicted_class": "N/A",
                     "risk_score": None,
+                    "detected_indicators": [],
                     "model_version": "N/A",
                     "prevention_action": "N/A",
                     "decision_reason": "N/A",
@@ -568,6 +897,7 @@ def export_scan_history_to_csv(scans: List[Dict[str, Any]]) -> str:
         "status",
         "predicted_class",
         "risk_score",
+        "detected_indicators",
         "prevention_action",
         "decision_reason",
         "model_version",
@@ -579,7 +909,11 @@ def export_scan_history_to_csv(scans: List[Dict[str, Any]]) -> str:
     writer.writeheader()
 
     for row in scans:
-        writer.writerow(row)
+        formatted_row = dict(row)
+        indicators = formatted_row.get("detected_indicators")
+        if isinstance(indicators, list):
+            formatted_row["detected_indicators"] = "; ".join(str(i) for i in indicators)
+        writer.writerow(formatted_row)
 
     return output.getvalue()
 

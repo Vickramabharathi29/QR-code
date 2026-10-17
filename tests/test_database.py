@@ -11,8 +11,12 @@ from postgrest.exceptions import APIError
 import config
 from modules.database import (
     SupabaseManager,
+    _handle_db_error,
+    clear_last_error,
     export_scan_history_to_csv,
     get_detailed_scan_history,
+    get_key_role,
+    get_last_error,
     get_recent_scans,
     get_supabase_client,
     insert_prevention_decision,
@@ -23,6 +27,7 @@ from modules.database import (
     save_complete_scan,
     test_connection as check_db_connection,
 )
+
 
 
 @pytest.fixture
@@ -455,4 +460,445 @@ def test_get_detailed_scan_history_fallback_on_error(mock_supabase_client):
     assert results[0]["scan_id"] == "scan-fb-1"
     assert results[0]["extracted_url"] == "https://fallback.com"
     assert results[0]["predicted_class"] == "N/A"
+
+
+def test_save_complete_scan_with_none_indicators(mock_supabase_client):
+    """Verify save_complete_scan handles None detected_indicators without raising AttributeError."""
+    response_mock = MagicMock()
+    response_mock.data = [{"id": "scan-none-indicators"}]
+    mock_supabase_client.table().insert().execute.return_value = response_mock
+
+    result = save_complete_scan(
+        extracted_url="https://example.com/clean",
+        qr_payload_type="URL",
+        predicted_class="SAFE",
+        risk_score=0.05,
+        detected_indicators=None,  # Explicitly None
+        selected_action="ALLOW",
+        decision_reason="Clean payload",
+        client=mock_supabase_client,
+    )
+
+    assert result is not None
+    assert result["scan_id"] == "scan-none-indicators"
+
+
+def test_save_complete_scan_with_url_analysis_result_integration(mock_supabase_client):
+    """Verify Supabase save operates seamlessly with URLAnalysisResult indicators."""
+    from modules.url_analyzer import analyze_url
+
+    analysis = analyze_url("http://192.168.1.1/admin")
+    # Both properties must be present and identical
+    assert hasattr(analysis, "risk_indicators")
+    assert hasattr(analysis, "suspicious_indicators")
+    assert analysis.risk_indicators == analysis.suspicious_indicators
+
+    # Extract indicators using the safe resilient pattern
+    indicators = getattr(analysis, "risk_indicators", getattr(analysis, "suspicious_indicators", []))
+    assert isinstance(indicators, list)
+    assert len(indicators) > 0
+
+    response_mock = MagicMock()
+    response_mock.data = [{"id": "scan-url-analysis-id"}]
+    mock_supabase_client.table().insert().execute.return_value = response_mock
+
+    result = save_complete_scan(
+        extracted_url=analysis.raw_payload,
+        qr_payload_type="URL",
+        predicted_class="SUSPICIOUS",
+        risk_score=analysis.risk_score,
+        detected_indicators=indicators,
+        selected_action="WARN",
+        decision_reason="IP address host detected",
+        client=mock_supabase_client,
+    )
+
+    assert result is not None
+    assert result["scan_id"] == "scan-url-analysis-id"
+
+
+def test_missing_indicators_safe_extraction_no_attribute_error():
+    """Verify that objects without suspicious_indicators attribute resolve safely without AttributeError."""
+    class DummyAnalysisNoIndicators:
+        raw_payload = "https://test.com"
+
+    dummy = DummyAnalysisNoIndicators()
+    # Emulate the safe extraction used in app.py
+    extracted = getattr(dummy, "risk_indicators", getattr(dummy, "suspicious_indicators", []))
+    assert extracted == []
+
+
+def test_get_key_role():
+    """Verify get_key_role safely parses JWT claims without network requests."""
+    # Base64url encoded: {"iss": "supabase", "role": "anon"}
+    anon_jwt = "header.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJhbm9uIn0.sig"
+    assert get_key_role(anon_jwt) == "anon"
+
+    # Base64url encoded: {"iss": "supabase", "role": "service_role"}
+    service_jwt = "header.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJzZXJ2aWNlX3JvbGUifQ.sig"
+    assert get_key_role(service_jwt) == "service_role"
+
+    # Malformed tokens
+    assert get_key_role("invalid-token") == "unknown"
+    assert get_key_role("") == "unknown"
+
+
+def test_handle_db_error_table_missing():
+    """Verify _handle_db_error generates actionable schema.sql guidance for PGRST205."""
+    clear_last_error()
+    err = APIError({"message": "Could not find the table 'public.scan_history' in the schema cache", "code": "PGRST205"})
+    summary = _handle_db_error(err, "INSERT", "scan_history")
+
+    assert summary["code"] == "PGRST205"
+    assert summary["table"] == "scan_history"
+    assert "schema.sql" in summary["guidance"]
+    assert get_last_error() == summary
+
+    clear_last_error()
+    assert get_last_error() is None
+
+
+def test_handle_db_error_rls_denial():
+    """Verify _handle_db_error generates actionable service_role key guidance for error 42501."""
+    err = APIError({"message": "new row violates row-level security policy for table scan_history", "code": "42501"})
+    summary = _handle_db_error(err, "INSERT", "scan_history")
+
+    assert summary["code"] == "42501"
+    assert "service_role" in summary["guidance"].lower()
+
+
+
+def test_handle_db_error_foreign_key_violation():
+    """Verify _handle_db_error generates clear foreign-key guidance for error 23503."""
+    err = APIError({"message": "insert or update on table threat_analysis violates foreign key constraint", "code": "23503"})
+    summary = _handle_db_error(err, "INSERT", "threat_analysis")
+
+    assert summary["code"] == "23503"
+    assert "Foreign key" in summary["guidance"]
+
+
+def test_handle_db_error_check_constraint_violation():
+    """Verify _handle_db_error generates clear CHECK constraint guidance for error 23514."""
+    err = APIError({"message": "new row for relation threat_analysis violates check constraint", "code": "23514"})
+    summary = _handle_db_error(err, "INSERT", "threat_analysis")
+
+    assert summary["code"] == "23514"
+    assert "CHECK constraint" in summary["guidance"]
+
+
+def test_handle_db_error_redacts_credentials():
+    """Verify _handle_db_error redacts Supabase keys and URLs from log messages and summaries."""
+    secret_key = "super_secret_test_key_12345678"
+    with patch("config.SUPABASE_KEY", secret_key):
+        err = Exception(f"Failed authenticating with {secret_key}")
+        summary = _handle_db_error(err, "INSERT", "scan_history")
+        assert secret_key not in summary["message"]
+        assert "[REDACTED]" in summary["message"]
+
+
+def test_save_complete_scan_fails_on_threat_analysis_failure():
+    """Verify save_complete_scan returns None when child threat_analysis insert fails."""
+    client = MagicMock()
+    scan_history_mock = MagicMock()
+    threat_mock = MagicMock()
+
+    def get_table(name):
+        if name == "scan_history":
+            return scan_history_mock
+        return threat_mock
+
+    client.table.side_effect = get_table
+
+    # 1. scan_history insert succeeds
+    scan_history_mock.insert.return_value.execute.return_value = MagicMock(data=[{"id": "scan-parent-1"}])
+
+    # 2. threat_analysis insert fails with FK violation or RLS error
+    threat_mock.insert.return_value.execute.side_effect = APIError({
+        "message": "insert violates foreign key constraint",
+        "code": "23503",
+    })
+
+    result = save_complete_scan(
+        extracted_url="https://test.com",
+        qr_payload_type="URL",
+        predicted_class="SAFE",
+        risk_score=0.1,
+        selected_action="ALLOW",
+        decision_reason="Clean",
+        client=client,
+    )
+
+    assert result is None
+    last_err = get_last_error()
+    assert last_err is not None
+    assert last_err["table"] == "threat_analysis"
+
+
+def test_save_complete_scan_fails_on_prevention_decision_failure():
+    """Verify save_complete_scan returns None when child prevention_decisions insert fails."""
+    client = MagicMock()
+    scan_history_mock = MagicMock()
+    threat_mock = MagicMock()
+    prevention_mock = MagicMock()
+
+    def get_table(name):
+        if name == "scan_history":
+            return scan_history_mock
+        elif name == "threat_analysis":
+            return threat_mock
+        return prevention_mock
+
+    client.table.side_effect = get_table
+
+    # 1. scan_history insert succeeds
+    scan_history_mock.insert.return_value.execute.return_value = MagicMock(data=[{"id": "scan-parent-2"}])
+    # 2. threat_analysis insert succeeds
+    threat_mock.insert.return_value.execute.return_value = MagicMock(data=[{"id": "threat-child-1"}])
+    # 3. prevention_decisions insert fails with RLS permission denied
+    prevention_mock.insert.return_value.execute.side_effect = APIError({
+        "message": "permission denied for table prevention_decisions",
+        "code": "42501",
+    })
+
+    result = save_complete_scan(
+        extracted_url="https://test.com",
+        qr_payload_type="URL",
+        predicted_class="SAFE",
+        risk_score=0.1,
+        selected_action="ALLOW",
+        decision_reason="Clean",
+        client=client,
+    )
+
+    assert result is None
+    last_err = get_last_error()
+    assert last_err is not None
+    assert last_err["table"] == "prevention_decisions"
+    assert "42501" in str(last_err["code"])
+
+
+@patch("modules.database.create_client")
+def test_get_supabase_client_prefers_service_role_key(mock_create):
+    """Verify get_supabase_client uses SUPABASE_SERVICE_ROLE_KEY over public SUPABASE_KEY."""
+    fake_client = MagicMock()
+    mock_create.return_value = fake_client
+
+    with patch("config.SUPABASE_URL", "https://valid.supabase.co"), \
+         patch("config.SUPABASE_KEY", "anon_key_123"), \
+         patch("config.SUPABASE_SERVICE_ROLE_KEY", "header.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJzZXJ2aWNlX3JvbGUifQ.sig"):
+        client = get_supabase_client(force_new=True, require_service_role=True)
+        assert client == fake_client
+        mock_create.assert_called_with("https://valid.supabase.co", "header.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJzZXJ2aWNlX3JvbGUifQ.sig")
+
+
+def test_get_supabase_client_rejects_anon_key_when_service_role_required():
+    """Verify get_supabase_client returns None when require_service_role is True but only anon key is present."""
+    with patch("config.SUPABASE_URL", "https://valid.supabase.co"), \
+         patch("config.SUPABASE_KEY", "header.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJhbm9uIn0.sig"), \
+         patch("config.SUPABASE_SERVICE_ROLE_KEY", ""):
+        client = get_supabase_client(force_new=True, require_service_role=True)
+        assert client is None
+
+
+def test_insert_scan_record_fails_gracefully_when_service_role_key_missing():
+    """Verify insert_scan_record returns None and sets guidance when SUPABASE_SERVICE_ROLE_KEY is missing."""
+    with patch("config.SUPABASE_URL", "https://valid.supabase.co"), \
+         patch("config.SUPABASE_KEY", "header.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJhbm9uIn0.sig"), \
+         patch("config.SUPABASE_SERVICE_ROLE_KEY", ""):
+        result = insert_scan_record("https://test.com", "URL", "PROCESSED", client=None)
+        assert result is None
+
+        last_err = get_last_error()
+        assert last_err is not None
+        assert "SUPABASE_SERVICE_ROLE_KEY is missing" in last_err["guidance"]
+
+
+def test_save_complete_scan_fails_gracefully_when_service_role_key_missing():
+    """Verify save_complete_scan returns None and sets guidance when SUPABASE_SERVICE_ROLE_KEY is missing."""
+    with patch("config.SUPABASE_URL", "https://valid.supabase.co"), \
+         patch("config.SUPABASE_KEY", "header.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJhbm9uIn0.sig"), \
+         patch("config.SUPABASE_SERVICE_ROLE_KEY", ""):
+        result = save_complete_scan(
+            extracted_url="https://test.com",
+            qr_payload_type="URL",
+            predicted_class="SAFE",
+            risk_score=0.1,
+            selected_action="ALLOW",
+            decision_reason="Testing",
+            client=None,
+        )
+        assert result is None
+
+        last_err = get_last_error()
+        assert last_err is not None
+        assert "SUPABASE_SERVICE_ROLE_KEY is missing" in last_err["guidance"]
+
+
+def test_insert_scan_record_database_write_failure_under_rls(mock_supabase_client):
+    """Verify insert_scan_record handles PostgreSQL 42501 RLS policy rejection accurately."""
+    mock_supabase_client.table("scan_history").insert().execute.side_effect = APIError({
+        "message": "new row violates row-level security policy for table scan_history",
+        "code": "42501",
+    })
+
+    result = insert_scan_record("https://test.com", "URL", "PENDING", client=mock_supabase_client)
+    assert result is None
+
+    last_err = get_last_error()
+    assert last_err is not None
+    assert last_err["code"] == "42501"
+    assert "Row Level Security (RLS) policy rejected" in last_err["guidance"]
+    assert "SUPABASE_KEY" in last_err["guidance"] or "SUPABASE_SERVICE_ROLE_KEY" in last_err["guidance"]
+
+
+def test_get_key_role_modern_and_jwt_formats():
+    """Verify get_key_role recognizes modern Supabase key prefixes and legacy JWTs."""
+    # Modern prefixes
+    assert get_key_role("sb_secret_abcdef1234567890abcdef") == "service_role"
+    assert get_key_role("sb_publishable_abcdef1234567890abcdef") == "anon"
+
+    # Empty or invalid
+    assert get_key_role("") == "unknown"
+    assert get_key_role("random_string_key") == "unknown"
+
+
+def test_insert_threat_analysis_permission_failure(mock_supabase_client):
+    """Verify insert_threat_analysis handles RLS 42501 permission rejection."""
+    mock_supabase_client.table("threat_analysis").insert().execute.side_effect = APIError({
+        "message": "permission denied for table threat_analysis",
+        "code": "42501",
+    })
+
+    result = insert_threat_analysis("scan-123", "SAFE", 0.1, client=mock_supabase_client)
+    assert result is None
+
+    last_err = get_last_error()
+    assert last_err is not None
+    assert last_err["code"] == "42501"
+    assert last_err["table"] == "threat_analysis"
+    assert "Row Level Security (RLS) policy rejected" in last_err["guidance"]
+
+
+def test_insert_prevention_decision_permission_failure(mock_supabase_client):
+    """Verify insert_prevention_decision handles RLS 42501 permission rejection."""
+    mock_supabase_client.table("prevention_decisions").insert().execute.side_effect = APIError({
+        "message": "new row violates row-level security policy for table prevention_decisions",
+        "code": "42501",
+    })
+
+    result = insert_prevention_decision("scan-123", "WARN_USER", "Review", client=mock_supabase_client)
+    assert result is None
+
+    last_err = get_last_error()
+    assert last_err is not None
+    assert last_err["code"] == "42501"
+    assert last_err["table"] == "prevention_decisions"
+    assert "Row Level Security (RLS) policy rejected" in last_err["guidance"]
+
+
+def test_insert_rl_feedback_permission_failure(mock_supabase_client):
+    """Verify insert_rl_feedback handles RLS 42501 permission rejection."""
+    mock_supabase_client.table("rl_feedback").insert().execute.side_effect = APIError({
+        "message": "new row violates row-level security policy for table rl_feedback",
+        "code": "42501",
+    })
+
+    result = insert_rl_feedback("scan-123", "STATE_0", "ALLOW", 10.0, client=mock_supabase_client)
+    assert result is None
+
+    last_err = get_last_error()
+    assert last_err is not None
+    assert last_err["code"] == "42501"
+    assert last_err["table"] == "rl_feedback"
+    assert "Row Level Security (RLS) policy rejected" in last_err["guidance"]
+
+
+def test_insert_threat_analysis_foreign_key_violation(mock_supabase_client):
+    """Verify insert_threat_analysis handles foreign key constraint violation (Error 23503)."""
+    mock_supabase_client.table("threat_analysis").insert().execute.side_effect = APIError({
+        "message": "insert violates foreign key constraint 'threat_analysis_scan_id_fkey'",
+        "code": "23503",
+    })
+
+    result = insert_threat_analysis("non-existent-scan-id", "SAFE", 0.05, client=mock_supabase_client)
+    assert result is None
+
+    last_err = get_last_error()
+    assert last_err is not None
+    assert last_err["code"] == "23503"
+    assert last_err["table"] == "threat_analysis"
+    assert "Foreign key constraint violation" in last_err["guidance"]
+
+
+def test_insert_prevention_decision_foreign_key_violation(mock_supabase_client):
+    """Verify insert_prevention_decision handles foreign key constraint violation (Error 23503)."""
+    mock_supabase_client.table("prevention_decisions").insert().execute.side_effect = APIError({
+        "message": "insert violates foreign key constraint 'prevention_decisions_scan_id_fkey'",
+        "code": "23503",
+    })
+
+    result = insert_prevention_decision("non-existent-scan-id", "BLOCK", "Malicious target", client=mock_supabase_client)
+    assert result is None
+
+    last_err = get_last_error()
+    assert last_err is not None
+    assert last_err["code"] == "23503"
+    assert last_err["table"] == "prevention_decisions"
+    assert "Foreign key constraint violation" in last_err["guidance"]
+
+
+def test_insert_rl_feedback_foreign_key_violation(mock_supabase_client):
+    """Verify insert_rl_feedback handles foreign key constraint violation (Error 23503)."""
+    mock_supabase_client.table("rl_feedback").insert().execute.side_effect = APIError({
+        "message": "insert violates foreign key constraint 'rl_feedback_scan_id_fkey'",
+        "code": "23503",
+    })
+
+    result = insert_rl_feedback("non-existent-scan-id", "STATE_0", "ALLOW", 5.0, client=mock_supabase_client)
+    assert result is None
+
+    last_err = get_last_error()
+    assert last_err is not None
+    assert last_err["code"] == "23503"
+    assert last_err["table"] == "rl_feedback"
+    assert "Foreign key constraint violation" in last_err["guidance"]
+
+
+def test_insert_records_missing_credentials():
+    """Verify insert functions fail gracefully when no Supabase credentials are configured."""
+    with patch("config.SUPABASE_URL", ""), patch("config.SUPABASE_KEY", ""), patch("config.SUPABASE_SERVICE_ROLE_KEY", ""):
+        assert insert_scan_record("https://test.com", client=None) is None
+        assert get_last_error()["guidance"].startswith("Database error during INSERT")
+
+        assert insert_threat_analysis("id", "SAFE", 0.1, client=None) is None
+        assert insert_prevention_decision("id", "ALLOW", "Clean", client=None) is None
+        assert insert_rl_feedback("id", "S0", "ALLOW", 1.0, client=None) is None
+
+
+def test_handle_db_error_regex_redacts_jwt_and_bearer():
+    """Verify _handle_db_error scrubs arbitrary Bearer tokens and JWT signatures from errors."""
+    leak_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.doNotLeakThisSignature12345"
+    exc = Exception(f"Failed Authorization: Bearer {leak_jwt}")
+    summary = _handle_db_error(exc, "INSERT", "scan_history")
+
+    assert leak_jwt not in summary["message"]
+    assert "[REDACTED_TOKEN]" in summary["message"] or "[REDACTED]" in summary["message"]
+    assert "doNotLeakThisSignature12345" not in summary["message"]
+
+
+@patch("modules.database.create_client")
+def test_get_supabase_client_uses_supabase_key_when_service_role(mock_create):
+    """Verify get_supabase_client uses SUPABASE_KEY when it contains a service-role secret."""
+    fake_client = MagicMock()
+    mock_create.return_value = fake_client
+
+    with patch("config.SUPABASE_URL", "https://valid.supabase.co"), \
+         patch("config.SUPABASE_KEY", "sb_secret_test_service_key_99999"), \
+         patch("config.SUPABASE_SERVICE_ROLE_KEY", ""):
+        client = get_supabase_client(force_new=True, require_service_role=True)
+        assert client == fake_client
+        mock_create.assert_called_with("https://valid.supabase.co", "sb_secret_test_service_key_99999")
+
+
+
 

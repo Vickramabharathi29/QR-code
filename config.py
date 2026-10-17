@@ -18,8 +18,10 @@ MODULES_DIR = BASE_DIR / "modules"
 load_dotenv(dotenv_path=BASE_DIR / ".env")
 
 # Supabase PostgreSQL Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://tjfhuulhzvlkqvjkevki.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
 
 # Application Environment
 APP_ENV = os.getenv("APP_ENV", "development")
@@ -77,14 +79,27 @@ RL_REWARDS = {
 
 def is_supabase_configured() -> bool:
     """Check if Supabase credentials have been supplied via environment variables.
-    
+
     Returns:
-        bool: True if both SUPABASE_URL and SUPABASE_KEY are non-empty and non-placeholder.
+        bool: True if SUPABASE_URL and either SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY are non-empty and non-placeholder.
     """
     url = (SUPABASE_URL or "").strip()
-    key = (SUPABASE_KEY or "").strip()
+    key = (SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY or "").strip()
     if not url or not key:
         return False
     if "your-project-id" in url or "your-supabase" in key:
         return False
     return True
+
+
+def is_service_role_configured() -> bool:
+    """Check if the server-side service_role key is configured for privileged operations.
+
+    Returns:
+        bool: True if SUPABASE_KEY or SUPABASE_SERVICE_ROLE_KEY is provided and not a placeholder.
+    """
+    key = (SUPABASE_KEY or SUPABASE_SERVICE_ROLE_KEY or "").strip()
+    if not key or "your-supabase" in key:
+        return False
+    return True
+

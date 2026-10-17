@@ -376,6 +376,9 @@ class ThreatPreventionEngine:
             },
         }
 
+    # Alias for API compatibility
+    evaluate_baseline_comparison = benchmark_policies
+
 
 def get_default_benchmark_scenarios() -> List[Dict[str, Any]]:
     """Diverse benchmark scenarios for side-by-side policy evaluation."""
