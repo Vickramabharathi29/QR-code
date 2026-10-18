@@ -29,9 +29,11 @@ QR-code/
 ├── .gitignore                  # Git exclusions (prevents credential & cache leaks)
 ├── README.md                   # Project documentation
 ├── supabase/
-│   └── schema.sql              # Supabase PostgreSQL DDL, indices & RLS policies
+│   ├── schema.sql              # Supabase PostgreSQL DDL, indices & RLS policies
+│   └── migrations/             # Incremental database migrations (RBAC, role tables)
 ├── modules/
 │   ├── __init__.py             # Module package marker
+│   ├── auth.py                 # Supabase Auth, admin sessions & Role-Based Access Control
 │   ├── qr_decoder.py           # QR decoding using OpenCV & Pyzbar
 │   ├── url_analyzer.py         # HTTP redirection tracer & endpoint resolver
 │   ├── feature_extractor.py    # URL lexical, structural, and behavioral feature extraction
@@ -47,7 +49,16 @@ QR-code/
 │   ├── README.md               # Guide for model checkpoints & Q-table exports
 │   └── .gitkeep
 └── tests/
-    └── __init__.py             # Pytest test suite
+    ├── __init__.py             # Pytest test suite
+    ├── test_auth_and_rbac.py   # RBAC & authentication verification tests
+    ├── test_database.py        # Database client & query tests
+    ├── test_evaluation.py      # ML/RL evaluation tests
+    ├── test_feature_extractor.py # Feature extraction tests
+    ├── test_ml_classifier.py   # Machine learning inference tests
+    ├── test_qr_decoder.py      # QR decoding tests
+    ├── test_reinforcement_learning.py # RL agent & Q-table tests
+    ├── test_threat_prevention.py # Safe navigation & decision tests
+    └── test_url_analyzer.py    # Redirection & URL parsing tests
 ```
 
 ---
@@ -80,15 +91,22 @@ QRShield uses Supabase PostgreSQL for persistence and does not use SQLite.
    - `rl_feedback`: User actions and ground-truth validation for agent tuning.
    - **Row Level Security (RLS)** policies enabled across all tables.
 
-### 2. Environment Variables Configuration
+### 2. Administrator RBAC Migration
+Execute [`supabase/migrations/20261018_admin_auth_and_roles.sql`](supabase/migrations/20261018_admin_auth_and_roles.sql) in the Supabase SQL Editor:
+- Creates `user_roles` table for role verification (`admin`, `analyst`, `user`).
+- Tightens Row Level Security (RLS) on telemetry to protect scan history.
+
+### 3. Environment Variables Configuration
 1. Copy `.env.example` to `.env`:
    ```bash
    cp .env.example .env
    ```
-2. Fill in your `SUPABASE_URL` and `SUPABASE_KEY` (Anon Public Key):
+2. Fill in your `SUPABASE_URL` and `SUPABASE_KEY`:
    ```env
    SUPABASE_URL=https://your-project-id.supabase.co
-   SUPABASE_KEY=your-supabase-anon-key
+   SUPABASE_KEY=your-supabase-service-role-key
+   ADMIN_EMAIL=Vickramabharathi@gmail.com
+   ADMIN_INITIAL_PASSWORD=your-secure-admin-password
    ```
 3. The `.env` file is included in `.gitignore` and must **never** be committed.
 
