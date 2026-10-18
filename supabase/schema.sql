@@ -17,12 +17,18 @@ CREATE TABLE IF NOT EXISTS public.scan_history (
     qr_payload_type TEXT NOT NULL DEFAULT 'URL' 
         CHECK (qr_payload_type IN ('URL', 'TEXT', 'WIFI', 'VCARD', 'OTHER')),
     scan_status TEXT NOT NULL DEFAULT 'PENDING' 
-        CHECK (scan_status IN ('PENDING', 'PROCESSED', 'FAILED'))
+        CHECK (scan_status IN ('PENDING', 'PROCESSED', 'FAILED')),
+    user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    destination_domain TEXT
 );
 
 -- Index for temporal ordering and dashboard queries
 CREATE INDEX IF NOT EXISTS idx_scan_history_created_at 
     ON public.scan_history(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scan_history_user_id 
+    ON public.scan_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_scan_history_destination_domain 
+    ON public.scan_history(destination_domain);
 
 -- -----------------------------------------------------------------------------
 -- Table 2: threat_analysis
@@ -61,6 +67,10 @@ CREATE TABLE IF NOT EXISTS public.prevention_decisions (
 -- Index for fast lookup by scan ID
 CREATE INDEX IF NOT EXISTS idx_prevention_decisions_scan_id 
     ON public.prevention_decisions(scan_id);
+
+-- Compatibility View: prevention_decision (singular alias)
+CREATE OR REPLACE VIEW public.prevention_decision AS
+SELECT * FROM public.prevention_decisions;
 
 -- -----------------------------------------------------------------------------
 -- Table 4: rl_feedback
@@ -102,8 +112,28 @@ CREATE TABLE IF NOT EXISTS public.user_roles (
 CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON public.user_roles(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_roles_email ON public.user_roles(email);
 
+-- -----------------------------------------------------------------------------
+-- Table 6: user_profiles
+-- Stores user profile identity metadata (full name, account status)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.user_profiles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    full_name TEXT NOT NULL DEFAULT 'SecOps User',
+    account_status TEXT NOT NULL DEFAULT 'active' CHECK (account_status IN ('active', 'suspended', 'deactivated')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    last_sign_in_at TIMESTAMPTZ,
+    CONSTRAINT uq_user_profiles_user_id UNIQUE (user_id),
+    CONSTRAINT uq_user_profiles_email UNIQUE (email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON public.user_profiles(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_profiles_email ON public.user_profiles(email);
+
 -- =============================================================================
--- Row Level Security (RLS) Configuration
+-- Row Level Security (RLS) Configuration (100% Idempotent)
 -- =============================================================================
 
 -- Enable Row Level Security (RLS) on all tables
@@ -112,38 +142,75 @@ ALTER TABLE public.threat_analysis ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.prevention_decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.rl_feedback ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
 
--- user_roles policies: Users can only read their own role. Only service_role can write.
+-- 1. user_roles policies: Users can read their own role; service_role manages roles
+DROP POLICY IF EXISTS "Users can read own role" ON public.user_roles;
 CREATE POLICY "Users can read own role" 
     ON public.user_roles FOR SELECT 
     TO authenticated 
     USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Service role manages user roles" ON public.user_roles;
 CREATE POLICY "Service role manages user roles" 
     ON public.user_roles FOR ALL 
     TO service_role 
     USING (true) 
     WITH CHECK (true);
 
--- Scan telemetry policies: Service role has full access; anon users cannot view global history.
+-- 2. user_profiles policies: Users read and update their own name; service_role manages profiles
+DROP POLICY IF EXISTS "Users can read own profile" ON public.user_profiles;
+CREATE POLICY "Users can read own profile" 
+    ON public.user_profiles FOR SELECT 
+    TO authenticated 
+    USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update own profile name" ON public.user_profiles;
+CREATE POLICY "Users can update own profile name" 
+    ON public.user_profiles FOR UPDATE 
+    TO authenticated 
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Service role manages all user profiles" ON public.user_profiles;
+CREATE POLICY "Service role manages all user profiles" 
+    ON public.user_profiles FOR ALL 
+    TO service_role 
+    USING (true) 
+    WITH CHECK (true);
+
+-- 3. scan_history policies: Users view own scans; service_role has full access
+DROP POLICY IF EXISTS "Users can view own scan history" ON public.scan_history;
+CREATE POLICY "Users can view own scan history" 
+    ON public.scan_history FOR SELECT 
+    TO authenticated 
+    USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Allow service role full access to scan_history" ON public.scan_history;
 CREATE POLICY "Allow service role full access to scan_history" 
     ON public.scan_history FOR ALL 
     TO service_role 
     USING (true) 
     WITH CHECK (true);
 
+-- 4. threat_analysis policies: Service role has full access
+DROP POLICY IF EXISTS "Allow service role full access to threat_analysis" ON public.threat_analysis;
 CREATE POLICY "Allow service role full access to threat_analysis" 
     ON public.threat_analysis FOR ALL 
     TO service_role 
     USING (true) 
     WITH CHECK (true);
 
+-- 5. prevention_decisions policies: Service role has full access
+DROP POLICY IF EXISTS "Allow service role full access to prevention_decisions" ON public.prevention_decisions;
 CREATE POLICY "Allow service role full access to prevention_decisions" 
     ON public.prevention_decisions FOR ALL 
     TO service_role 
     USING (true) 
     WITH CHECK (true);
 
+-- 6. rl_feedback policies: Service role has full access
+DROP POLICY IF EXISTS "Allow service role full access to rl_feedback" ON public.rl_feedback;
 CREATE POLICY "Allow service role full access to rl_feedback" 
     ON public.rl_feedback FOR ALL 
     TO service_role 

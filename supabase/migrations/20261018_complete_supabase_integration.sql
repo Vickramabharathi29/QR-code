@@ -43,15 +43,20 @@ SELECT * FROM public.prevention_decisions;
 -- 4. Create user_profiles table for user profile details
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.user_profiles (
-    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
     full_name TEXT NOT NULL DEFAULT 'SecOps User',
-    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
-    account_status TEXT NOT NULL DEFAULT 'Active' CHECK (account_status IN ('Active', 'Suspended', 'Deactivated')),
+    account_status TEXT NOT NULL DEFAULT 'active' CHECK (account_status IN ('active', 'suspended', 'deactivated')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
+    last_sign_in_at TIMESTAMPTZ,
+    CONSTRAINT uq_user_profiles_user_id UNIQUE (user_id),
+    CONSTRAINT uq_user_profiles_email UNIQUE (email)
 );
 
-CREATE INDEX IF NOT EXISTS idx_user_profiles_role ON public.user_profiles(role);
+CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON public.user_profiles(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_profiles_email ON public.user_profiles(email);
 
 -- -----------------------------------------------------------------------------
 -- 5. Row Level Security (RLS) Configuration
@@ -113,11 +118,11 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'users_read_own_profile') THEN
         CREATE POLICY users_read_own_profile ON public.user_profiles FOR SELECT TO authenticated
-        USING (auth.uid() = id);
+        USING (auth.uid() = user_id);
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'users_update_own_profile_name') THEN
         CREATE POLICY users_update_own_profile_name ON public.user_profiles FOR UPDATE TO authenticated
-        USING (auth.uid() = id)
-        WITH CHECK (auth.uid() = id AND role = (SELECT role FROM public.user_profiles WHERE id = auth.uid()));
+        USING (auth.uid() = user_id)
+        WITH CHECK (auth.uid() = user_id);
     END IF;
 END $$;

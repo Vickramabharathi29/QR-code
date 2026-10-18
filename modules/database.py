@@ -274,7 +274,13 @@ def get_supabase_client(
             and srv_key == _cached_srv_key
         ):
             # Ensure the service client hasn't been polluted by a user sign-in session
-            if not getattr(getattr(_service_client_instance, "auth", None), "current_session", None):
+            auth_hdr = getattr(getattr(_service_client_instance, "postgrest", None), "headers", {}).get("Authorization", "")
+            is_valid_service = False
+            for k in [srv_key, pub_key]:
+                if k and auth_hdr.endswith(k):
+                    is_valid_service = True
+                    break
+            if is_valid_service:
                 return _service_client_instance
 
     # Check cached standard singleton
@@ -331,9 +337,10 @@ def get_supabase_client(
     try:
         client = create_client(url, chosen_key)
         if not force_new and supabase_url is None:
-            if require_service_role or chosen_role == "service_role":
+            if require_service_role:
                 _service_client_instance = client
-            _client_instance = client
+            else:
+                _client_instance = client
             _client_role = chosen_role
             _cached_url = url
             _cached_pub_key = pub_key
@@ -1016,24 +1023,27 @@ def get_user_display_map(
 
     # Query public.user_profiles if available
     try:
-        query = active_client.table("user_profiles").select("id, full_name, role")
+        query = active_client.table("user_profiles").select("user_id, full_name, email, account_status")
         if id_list:
-            query = query.in_("id", id_list)
+            query = query.in_("user_id", id_list)
         prof_res = query.execute()
         for p in prof_res.data or []:
-            uid = str(p.get("id") or "")
+            uid = str(p.get("user_id") or "")
             if uid:
                 if uid not in user_map:
                     user_map[uid] = {
-                        "email": "",
+                        "email": p.get("email") or "",
                         "full_name": p.get("full_name") or "User",
-                        "role": p.get("role") or "user",
+                        "role": "user",
+                        "account_status": p.get("account_status") or "active",
                     }
                 else:
                     if p.get("full_name"):
                         user_map[uid]["full_name"] = p.get("full_name")
-                    if p.get("role"):
-                        user_map[uid]["role"] = p.get("role")
+                    if p.get("email") and not user_map[uid].get("email"):
+                        user_map[uid]["email"] = p.get("email")
+                    if p.get("account_status"):
+                        user_map[uid]["account_status"] = p.get("account_status")
     except Exception as e:
         logger.debug("user_profiles query note: %s", e)
 

@@ -1320,9 +1320,9 @@ def render_scan_qr_screen() -> None:
 
                         # Associate authenticated user details when logged in
                         current_user = st.session_state.get("auth_user") or {}
-                        auth_uid = current_user.get("user_id") if is_admin_authenticated() else None
-                        auth_email = current_user.get("email") if is_admin_authenticated() else None
-                        auth_name = current_user.get("full_name") if is_admin_authenticated() else None
+                        auth_uid = current_user.get("user_id")
+                        auth_email = current_user.get("email")
+                        auth_name = current_user.get("full_name")
 
                         decision_obj = nav_dec["decision"]
                         pred_label = "MALICIOUS" if decision_obj.final_action == "BLOCK" else ("SAFE" if decision_obj.final_action == "ALLOW" else "SUSPICIOUS")
