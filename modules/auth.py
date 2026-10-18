@@ -168,7 +168,7 @@ def authenticate_admin(
     if not clean_pwd:
         return False, None, "Please enter your administrator password."
 
-    active_client = client or database.get_supabase_client()
+    active_client = client or database.get_supabase_client(force_new=True)
     if active_client is None:
         return False, None, "Supabase connection is not configured. Please check .env configuration."
 
@@ -275,11 +275,12 @@ def sign_out_admin(client: Optional[Client] = None) -> bool:
 
 def change_admin_password(
     new_password: str,
-    current_password: Optional[str] = None,
     confirm_password: Optional[str] = None,
+    current_password: Optional[str] = None,
     user_id: Optional[str] = None,
     admin_email: Optional[str] = None,
     client: Optional[Client] = None,
+    **kwargs: Any,
 ) -> Tuple[bool, str]:
     """Change the administrator password securely via Supabase Auth.
 
@@ -289,23 +290,31 @@ def change_admin_password(
 
     Args:
         new_password: The new complex password to set.
-        current_password: Optional current password for verification.
         confirm_password: Optional confirmation password to verify match.
+        current_password: Optional current password for verification.
         user_id: Optional UUID of the user. If omitted, resolved via email or client.
         admin_email: Optional administrator email address.
         client: Optional Supabase client instance.
+        **kwargs: Flexible keyword arguments for full caller compatibility.
 
     Returns:
         Tuple[bool, str]: (Success boolean, Status message).
     """
-    if confirm_password is not None and str(new_password) != str(confirm_password):
+    # Normalize confirm_password across keyword variations
+    conf = confirm_password if confirm_password is not None else kwargs.get("confirm_password")
+    curr = current_password if current_password is not None else kwargs.get("current_password")
+
+    if not new_password:
+        return False, "New password cannot be empty."
+
+    if conf is not None and str(new_password) != str(conf):
         return False, "New password and confirmation do not match."
 
     target_email = (admin_email or get_admin_email()).strip().lower()
 
     # Step 1: Verify current password if supplied
-    if current_password:
-        clean_curr = str(current_password).strip()
+    if curr:
+        clean_curr = str(curr).strip()
         if not clean_curr:
             return False, "Current password cannot be empty."
         if new_password == clean_curr:
@@ -375,6 +384,147 @@ def change_admin_password(
         return False, f"Failed to update password: {err_msg}"
 
 
+def get_user_profile(
+    user_id: str,
+    client: Optional[Client] = None,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve detailed user profile for an authenticated administrator or user.
+
+    Reads from public.user_profiles if the table is created, and enriches or falls back
+    to Supabase Auth metadata and user attributes.
+
+    Args:
+        user_id: The UUID of the authenticated user.
+        client: Optional Supabase client instance.
+
+    Returns:
+        Optional[Dict[str, Any]]: Profile dictionary or None if not found.
+    """
+    if not user_id:
+        return None
+
+    srv_client = client or database.get_supabase_client(require_service_role=True)
+    if srv_client is None:
+        return None
+
+    profile_data: Dict[str, Any] = {
+        "id": user_id,
+        "user_id": user_id,
+        "email": "",
+        "full_name": "SecOps User",
+        "role": "admin",
+        "account_status": "Active",
+        "created_at": None,
+        "last_sign_in_at": None,
+    }
+
+    # 1. Fetch Supabase Auth user record
+    try:
+        found_u = None
+        if hasattr(srv_client.auth.admin, "get_user_by_id"):
+            try:
+                res = srv_client.auth.admin.get_user_by_id(user_id)
+                found_u = getattr(res, "user", res)
+            except Exception:
+                found_u = None
+        if found_u is None and hasattr(srv_client.auth.admin, "list_users"):
+            users = srv_client.auth.admin.list_users()
+            for u in users:
+                if str(getattr(u, "id", "")) == str(user_id):
+                    found_u = u
+                    break
+
+        if found_u:
+            profile_data["email"] = getattr(found_u, "email", "")
+            c_at = getattr(found_u, "created_at", None)
+            l_at = getattr(found_u, "last_sign_in_at", None)
+            profile_data["created_at"] = c_at.isoformat() if hasattr(c_at, "isoformat") else str(c_at or "")
+            profile_data["last_sign_in_at"] = l_at.isoformat() if hasattr(l_at, "isoformat") else str(l_at or "")
+
+            u_meta = getattr(found_u, "user_metadata", {}) or {}
+            if u_meta.get("full_name"):
+                profile_data["full_name"] = u_meta["full_name"]
+            if u_meta.get("role"):
+                profile_data["role"] = u_meta["role"]
+    except Exception as auth_err:
+        logger.debug("Auth user list query note: %s", auth_err)
+
+    # 2. Check public.user_roles table for role
+    try:
+        role_res = srv_client.table("user_roles").select("role").eq("user_id", user_id).execute()
+        if role_res.data and len(role_res.data) > 0:
+            profile_data["role"] = role_res.data[0].get("role", profile_data["role"])
+    except Exception as r_err:
+        logger.debug("user_roles query note: %s", r_err)
+
+    # 3. Check public.user_profiles table if present
+    try:
+        p_res = srv_client.table("user_profiles").select("*").eq("user_id", user_id).execute()
+        if p_res.data and len(p_res.data) > 0:
+            row = p_res.data[0]
+            if row.get("full_name"):
+                profile_data["full_name"] = row["full_name"]
+            if row.get("account_status"):
+                profile_data["account_status"] = row["account_status"]
+            if row.get("email"):
+                profile_data["email"] = row["email"]
+    except Exception as p_err:
+        logger.debug("user_profiles query note: %s", p_err)
+
+    return profile_data
+
+
+def update_user_profile(
+    user_id: str,
+    full_name: str,
+    client: Optional[Client] = None,
+) -> Tuple[bool, str]:
+    """Update non-sensitive user profile attributes (such as full name) securely.
+
+    Enforces that regular users cannot elevate their role or modify system privileges.
+
+    Args:
+        user_id: The UUID of the user to update.
+        full_name: The new full name to set.
+        client: Optional Supabase client instance.
+
+    Returns:
+        Tuple[bool, str]: (Success boolean, Status message).
+    """
+    if not user_id:
+        return False, "User ID is required for profile update."
+
+    clean_name = str(full_name or "").strip()
+    if not clean_name:
+        return False, "Full name cannot be empty."
+
+    srv_client = client or database.get_supabase_client(require_service_role=True)
+    if srv_client is None:
+        return False, "Supabase service_role connection is unavailable."
+
+    try:
+        # Update user_metadata in Supabase Auth
+        srv_client.auth.admin.update_user_by_id(
+            user_id,
+            {"user_metadata": {"full_name": clean_name}},
+        )
+
+        # Attempt to sync to public.user_profiles if table exists
+        try:
+            srv_client.table("user_profiles").update(
+                {"full_name": clean_name}
+            ).eq("user_id", user_id).execute()
+        except Exception as p_err:
+            logger.debug("user_profiles update sync note: %s", p_err)
+
+        logger.info("Updated full name for user ID %s", user_id[:8])
+        return True, "Profile full name updated successfully."
+    except Exception as exc:
+        err_msg = str(exc)
+        logger.error("Failed to update user profile: %s", err_msg)
+        return False, f"Failed to update profile: {err_msg}"
+
+
 def verify_admin_authorization(session_dict: Optional[Dict[str, Any]]) -> bool:
     """Verify whether a session dictionary holds valid, unexpired administrator privileges.
 
@@ -391,3 +541,4 @@ def verify_admin_authorization(session_dict: Optional[Dict[str, Any]]) -> bool:
     if not session_dict.get("user_id") or not session_dict.get("email"):
         return False
     return True
+

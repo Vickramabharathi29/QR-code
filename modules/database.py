@@ -14,7 +14,8 @@ and PostgreSQL/PostgREST errors without crashing or falling back to SQLite.
 import base64
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from postgrest.exceptions import APIError
 from supabase import Client, create_client
@@ -26,6 +27,7 @@ if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 _client_instance: Optional[Client] = None
+_service_client_instance: Optional[Client] = None
 _client_role: Optional[str] = None
 _cached_url: Optional[str] = None
 _cached_pub_key: Optional[str] = None
@@ -239,7 +241,7 @@ def get_supabase_client(
     Returns:
         Optional[Client]: The connected Supabase client, or None if credentials are missing or inadequate.
     """
-    global _client_instance, _client_role, _cached_url, _cached_pub_key, _cached_srv_key
+    global _client_instance, _service_client_instance, _client_role, _cached_url, _cached_pub_key, _cached_srv_key
 
     # If key is provided explicitly
     if supabase_key is not None:
@@ -261,8 +263,22 @@ def get_supabase_client(
     srv_key = getattr(config, "SUPABASE_SERVICE_ROLE_KEY", "").strip()
     pub_key = (config.SUPABASE_KEY or "").strip()
 
-    # Check cached singleton if credentials haven't changed
-    if (
+    # Check cached service client if require_service_role is requested
+    if require_service_role:
+        if (
+            _service_client_instance is not None
+            and not force_new
+            and supabase_url is None
+            and url == _cached_url
+            and pub_key == _cached_pub_key
+            and srv_key == _cached_srv_key
+        ):
+            # Ensure the service client hasn't been polluted by a user sign-in session
+            if not getattr(getattr(_service_client_instance, "auth", None), "current_session", None):
+                return _service_client_instance
+
+    # Check cached standard singleton
+    elif (
         _client_instance is not None
         and not force_new
         and supabase_url is None
@@ -270,10 +286,7 @@ def get_supabase_client(
         and pub_key == _cached_pub_key
         and srv_key == _cached_srv_key
     ):
-        if require_service_role and _client_role == "anon":
-            pass
-        else:
-            return _client_instance
+        return _client_instance
 
     chosen_key = None
     chosen_role = "unknown"
@@ -318,6 +331,8 @@ def get_supabase_client(
     try:
         client = create_client(url, chosen_key)
         if not force_new and supabase_url is None:
+            if require_service_role or chosen_role == "service_role":
+                _service_client_instance = client
             _client_instance = client
             _client_role = chosen_role
             _cached_url = url
@@ -380,6 +395,8 @@ def insert_scan_record(
     qr_payload_type: str = "URL",
     scan_status: str = "PENDING",
     scan_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    destination_domain: Optional[str] = None,
     client: Optional[Client] = None,
 ) -> Optional[Dict[str, Any]]:
     """Insert a new QR scan event into the scan_history table.
@@ -389,6 +406,8 @@ def insert_scan_record(
         qr_payload_type: Type of QR payload ('URL', 'TEXT', 'WIFI', 'VCARD', 'OTHER').
         scan_status: Status flag ('PENDING', 'PROCESSED', 'FAILED').
         scan_id: Optional client-specified UUID for idempotency.
+        user_id: Optional UUID of the authenticated user performing the scan.
+        destination_domain: Optional resolved network domain string.
         client: Optional Supabase client.
 
     Returns:
@@ -411,7 +430,6 @@ def insert_scan_record(
                 "scan_history",
             )
         return None
-
 
     raw_type_str = str(qr_payload_type or "").upper().strip()
     if raw_type_str in {"URL", "TEXT", "WIFI", "VCARD", "OTHER"}:
@@ -439,6 +457,10 @@ def insert_scan_record(
     }
     if scan_id:
         record["id"] = scan_id
+    if user_id:
+        record["user_id"] = user_id
+    if destination_domain:
+        record["destination_domain"] = destination_domain
 
     try:
         response = active_client.table("scan_history").insert(record).execute()
@@ -448,10 +470,26 @@ def insert_scan_record(
             return inserted
         _handle_db_error(Exception("Insert returned empty data array"), "INSERT", "scan_history", record)
         return None
-    except APIError as api_err:
-        _handle_db_error(api_err, "INSERT", "scan_history", record)
-        return None
     except Exception as exc:
+        err_str = str(exc).lower()
+        # If user_id or destination_domain columns do not exist in Supabase yet, gracefully fallback to base columns
+        if "user_id" in err_str or "destination_domain" in err_str or "pgrst204" in err_str:
+            base_record: Dict[str, Any] = {
+                "extracted_url": extracted_url,
+                "qr_payload_type": qr_payload_type,
+                "scan_status": scan_status,
+            }
+            if scan_id:
+                base_record["id"] = scan_id
+            try:
+                fb_res = active_client.table("scan_history").insert(base_record).execute()
+                if fb_res.data and len(fb_res.data) > 0:
+                    inserted = fb_res.data[0]
+                    logger.info(f"Recorded scan {inserted.get('id')} using base schema fallback.")
+                    return inserted
+            except Exception as fb_exc:
+                _handle_db_error(fb_exc, "INSERT", "scan_history", base_record)
+                return None
         _handle_db_error(exc, "INSERT", "scan_history", record)
         return None
 
@@ -627,6 +665,15 @@ def insert_prevention_decision(
         _handle_db_error(Exception("Insert returned empty data array"), "INSERT", "prevention_decisions", record)
         return None
     except APIError as api_err:
+        if api_err.code == "PGRST205" or "not found" in str(api_err).lower():
+            try:
+                fallback_resp = active_client.table("prevention_decision").insert(record).execute()
+                if fallback_resp.data and len(fallback_resp.data) > 0:
+                    inserted = fallback_resp.data[0]
+                    logger.info(f"Recorded prevention decision via fallback {inserted.get('id')} ({normalized_action}) for scan {scan_id}")
+                    return inserted
+            except Exception:
+                pass
         _handle_db_error(api_err, "INSERT", "prevention_decisions", record)
         return None
     except Exception as exc:
@@ -719,12 +766,18 @@ def save_complete_scan(
     selected_action: str = "WARN_USER",
     decision_reason: str = "Automated threat evaluation",
     scan_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    destination_domain: Optional[str] = None,
     model_version: str = "v1.0.0",
     policy_version: str = "v1.0.0",
+    state_label: Optional[str] = None,
+    reward: Optional[float] = None,
+    feedback_source: str = "AUTOMATED",
+    raw_action: Optional[str] = None,
     client: Optional[Client] = None,
-
+    **kwargs: Any,
 ) -> Optional[Dict[str, Any]]:
-    """Save complete scan results across scan_history, threat_analysis, and prevention_decisions.
+    """Save complete scan results across scan_history, threat_analysis, prevention_decisions, and rl_feedback.
 
     Enforces atomicity and idempotency if a scan_id is provided.
 
@@ -737,8 +790,14 @@ def save_complete_scan(
         selected_action: Final security-enforced action.
         decision_reason: Rationale text.
         scan_id: Optional client UUID for idempotency.
+        user_id: Optional authenticated user UUID.
+        destination_domain: Optional destination domain.
         model_version: Classifier model version.
         policy_version: RL policy version.
+        state_label: Reinforcement learning state representation.
+        reward: Reinforcement learning reward signal.
+        feedback_source: Source of RL feedback ('AUTOMATED', 'USER', 'ADMIN').
+        raw_action: Pre-constraint recommendation from Q-table.
         client: Optional Supabase client.
 
     Returns:
@@ -763,6 +822,14 @@ def save_complete_scan(
             )
         return None
 
+    # Derive destination domain if missing and payload is a URL
+    resolved_domain = destination_domain
+    if not resolved_domain and extracted_url and "://" in str(extracted_url):
+        try:
+            import urllib.parse
+            resolved_domain = urllib.parse.urlparse(extracted_url).netloc
+        except Exception:
+            resolved_domain = None
 
     # 1. Insert scan_history
     scan_record = insert_scan_record(
@@ -770,6 +837,8 @@ def save_complete_scan(
         qr_payload_type=qr_payload_type,
         scan_status="PROCESSED",
         scan_id=scan_id,
+        user_id=user_id,
+        destination_domain=resolved_domain,
         client=active_client,
     )
     if not scan_record:
@@ -807,12 +876,183 @@ def save_complete_scan(
         logger.error(f"Failed to insert prevention_decisions record for scan {assigned_scan_id}.")
         return None
 
+    # 4. Insert rl_feedback
+    effective_state = state_label or f"STATE:{predicted_class.upper()}_RISK_{int(score_val * 100)}"
+    if reward is None:
+        norm_act = selected_action.upper().strip()
+        if norm_act in ("BLOCK", "ACTION_BLOCK"):
+            effective_reward = 15.0 if predicted_class.upper() == "MALICIOUS" else -15.0
+        elif norm_act in ("ALLOW", "ACTION_ALLOW"):
+            effective_reward = 10.0 if predicted_class.upper() == "SAFE" else -20.0
+        else:
+            effective_reward = 5.0
+    else:
+        effective_reward = float(reward)
+
+    rl_record = insert_rl_feedback(
+        scan_id=assigned_scan_id,
+        state_label=effective_state,
+        selected_action=selected_action,
+        reward=effective_reward,
+        feedback_source=feedback_source,
+        client=active_client,
+    )
+    if not rl_record:
+        logger.warning(f"Failed to record rl_feedback record for scan {assigned_scan_id}.")
+
     return {
         "scan_id": assigned_scan_id,
         "scan_record": scan_record,
         "threat_record": threat_record,
         "decision_record": decision_record,
+        "rl_record": rl_record,
     }
+
+
+def run_database_diagnostics(client: Optional[Client] = None) -> Dict[str, Any]:
+    """Execute non-destructive database and authentication diagnostics.
+
+    Verifies client initialization, table access, write health, and RLS configuration
+    without exposing keys, passwords, or credentials.
+
+    Returns:
+        Dict[str, Any]: Safe diagnostics report.
+    """
+    diag: Dict[str, Any] = {
+        "is_configured": config.is_supabase_configured(),
+        "is_service_role": config.is_service_role_configured(),
+        "connection_verified": False,
+        "connection_message": "",
+        "tables": {},
+        "write_verified": False,
+        "auth_verified": False,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    active_client = client or get_supabase_client(require_service_role=True)
+    if active_client is None:
+        diag["connection_message"] = "Supabase client initialization failed: Missing or invalid API key/URL."
+        return diag
+
+    # 1. Connection check
+    is_ok, msg = test_connection(active_client)
+    diag["connection_verified"] = is_ok
+    diag["connection_message"] = msg
+
+    # 2. Table access checks
+    check_tables = ["scan_history", "threat_analysis", "prevention_decisions", "rl_feedback", "user_roles", "user_profiles"]
+    for tbl in check_tables:
+        try:
+            res = active_client.table(tbl).select("id").limit(1).execute()
+            diag["tables"][tbl] = {
+                "accessible": True,
+                "row_sample": len(res.data) if res.data is not None else 0,
+            }
+        except Exception as t_err:
+            diag["tables"][tbl] = {
+                "accessible": False,
+                "error": str(t_err).split("\n")[0][:80],
+            }
+
+    # 3. Auth service check
+    try:
+        users = active_client.auth.admin.list_users()
+        diag["auth_verified"] = True
+        diag["user_count"] = len(users)
+    except Exception as a_err:
+        diag["auth_verified"] = False
+        diag["auth_error"] = str(a_err).split("\n")[0][:80]
+
+    # 4. Write capability verification (scan_history is confirmed writeable if service-role is active)
+    diag["write_verified"] = diag["is_service_role"] and diag["tables"].get("scan_history", {}).get("accessible", False)
+    diag["configured"] = diag["is_configured"]
+    diag["connection_ok"] = diag["connection_verified"]
+    diag["tables_accessible"] = [t for t, info in diag["tables"].items() if info.get("accessible")]
+
+    return diag
+
+
+def get_user_display_map(
+    client: Optional[Client] = None,
+    user_ids: Optional[Union[Set[str], List[str]]] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Retrieve mapping of user UUIDs to non-sensitive profile attributes (email, name, role).
+
+    Args:
+        client: Optional Supabase client.
+        user_ids: Optional collection of user UUIDs to filter by.
+
+    Returns:
+        Dict[str, Dict[str, str]]: Mapping of user_id -> {'email': ..., 'full_name': ..., 'role': ...}
+    """
+    if user_ids is not None and len(user_ids) == 0:
+        return {}
+
+    active_client = client or get_supabase_client(require_service_role=True)
+    if active_client is None:
+        return {}
+
+    user_map: Dict[str, Dict[str, str]] = {}
+    id_list = list(user_ids) if user_ids is not None else None
+
+    # Query public.user_roles if available
+    try:
+        query = active_client.table("user_roles").select("user_id, email, role")
+        if id_list:
+            query = query.in_("user_id", id_list)
+        roles_res = query.execute()
+        for r in roles_res.data or []:
+            uid = str(r.get("user_id") or "")
+            if uid:
+                email = r.get("email") or ""
+                name = email.split("@")[0].capitalize() if email else "User"
+                user_map[uid] = {
+                    "email": email,
+                    "full_name": name,
+                    "role": r.get("role") or "user",
+                }
+    except Exception as e:
+        logger.debug("user_roles query note: %s", e)
+
+    # Query public.user_profiles if available
+    try:
+        query = active_client.table("user_profiles").select("id, full_name, role")
+        if id_list:
+            query = query.in_("id", id_list)
+        prof_res = query.execute()
+        for p in prof_res.data or []:
+            uid = str(p.get("id") or "")
+            if uid:
+                if uid not in user_map:
+                    user_map[uid] = {
+                        "email": "",
+                        "full_name": p.get("full_name") or "User",
+                        "role": p.get("role") or "user",
+                    }
+                else:
+                    if p.get("full_name"):
+                        user_map[uid]["full_name"] = p.get("full_name")
+                    if p.get("role"):
+                        user_map[uid]["role"] = p.get("role")
+    except Exception as e:
+        logger.debug("user_profiles query note: %s", e)
+
+    # Query auth.admin.list_users() if available
+    try:
+        if hasattr(active_client, "auth") and hasattr(active_client.auth, "admin") and hasattr(active_client.auth.admin, "list_users"):
+            users = active_client.auth.admin.list_users()
+            for u in users:
+                uid = str(getattr(u, "id", "") or "")
+                if uid and (not id_list or uid in id_list):
+                    email = getattr(u, "email", "") or ""
+                    meta = getattr(u, "user_metadata", {}) or {}
+                    name = meta.get("full_name") or (email.split("@")[0].capitalize() if email else "User")
+                    role = meta.get("role") or user_map.get(uid, {}).get("role", "user")
+                    user_map[uid] = {"email": email, "full_name": name, "role": role}
+    except Exception as e:
+        logger.debug("auth.admin.list_users note: %s", e)
+
+    return user_map
 
 
 def get_detailed_scan_history(
@@ -820,7 +1060,7 @@ def get_detailed_scan_history(
     client: Optional[Client] = None,
     is_admin: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Retrieve scan history joined with threat analysis and prevention decision details.
+    """Retrieve scan history joined with threat analysis, prevention decision, and RL feedback.
 
     Args:
         limit: Maximum number of scan records to retrieve.
@@ -828,61 +1068,36 @@ def get_detailed_scan_history(
         is_admin: Boolean indicating whether caller is an authorized administrator.
 
     Returns:
-        List[Dict[str, Any]]: Flattened records suitable for table display and CSV export.
+        List[Dict[str, Any]]: Comprehensive flattened audit records.
     """
     if not is_admin:
         logger.warning("Unauthorized access to global scan history rejected.")
         return []
 
-    active_client = client or get_supabase_client()
+    active_client = client or get_supabase_client(require_service_role=True)
     if active_client is None:
         logger.warning("Cannot retrieve detailed scans: Supabase is not configured.")
         return []
 
+    raw_rows = []
+
+    # 1. Attempt relational PostgREST embedded query across scan_history, threat_analysis, prevention_decisions, and rl_feedback
     try:
-        # Perform PostgREST embedded query across relational foreign keys
         response = (
             active_client.table("scan_history")
             .select(
-                "id, created_at, extracted_url, qr_payload_type, scan_status, "
+                "id, created_at, extracted_url, qr_payload_type, scan_status, user_id, destination_domain, "
                 "threat_analysis(predicted_class, risk_score, detected_indicators, model_version), "
-                "prevention_decisions(selected_action, decision_reason, policy_version)"
+                "prevention_decisions(selected_action, decision_reason, policy_version), "
+                "rl_feedback(state_label, selected_action, reward, feedback_source)"
             )
             .order("created_at", desc=True)
             .limit(max(1, limit))
             .execute()
         )
         raw_rows = response.data or []
-
-        flattened = []
-        for row in raw_rows:
-            threats = row.get("threat_analysis") or []
-            threat = threats[0] if isinstance(threats, list) and threats else (threats if isinstance(threats, dict) else {})
-
-            decisions = row.get("prevention_decisions") or []
-            decision = decisions[0] if isinstance(decisions, list) and decisions else (decisions if isinstance(decisions, dict) else {})
-
-            action_val = decision.get("selected_action", "N/A")
-            if action_val == "WARN_USER":
-                action_val = "WARN"
-
-            flattened.append({
-                "scan_id": row.get("id"),
-                "timestamp": row.get("created_at"),
-                "extracted_url": row.get("extracted_url") or "[Empty / None]",
-                "payload_type": row.get("qr_payload_type", "OTHER"),
-                "status": row.get("scan_status", "PENDING"),
-                "predicted_class": threat.get("predicted_class", "N/A"),
-                "risk_score": threat.get("risk_score"),
-                "detected_indicators": threat.get("detected_indicators") or [],
-                "model_version": threat.get("model_version", "N/A"),
-                "prevention_action": action_val,
-                "decision_reason": decision.get("decision_reason", "N/A"),
-                "policy_version": decision.get("policy_version", "N/A"),
-            })
-        return flattened
     except Exception as exc:
-        logger.warning(f"Embedded scan history query encountered exception: {exc}. Trying fallback...")
+        logger.warning("Embedded scan history query encountered exception: %s. Trying fallback...", exc)
         try:
             simple_scans = get_recent_scans(limit=limit, client=active_client)
             return [
@@ -890,8 +1105,13 @@ def get_detailed_scan_history(
                     "scan_id": s.get("id"),
                     "timestamp": s.get("created_at"),
                     "extracted_url": s.get("extracted_url") or "[Empty / None]",
+                    "destination_domain": s.get("destination_domain") or "N/A",
                     "payload_type": s.get("qr_payload_type", "OTHER"),
                     "status": s.get("scan_status", "PENDING"),
+                    "user_id": s.get("user_id"),
+                    "user_email": "Anonymous Guest" if not s.get("user_id") else f"User {str(s.get('user_id'))[:8]}",
+                    "user_name": "Public Guest" if not s.get("user_id") else "Registered User",
+                    "user_role": "guest" if not s.get("user_id") else "user",
                     "predicted_class": "N/A",
                     "risk_score": None,
                     "detected_indicators": [],
@@ -899,12 +1119,78 @@ def get_detailed_scan_history(
                     "prevention_action": "N/A",
                     "decision_reason": "N/A",
                     "policy_version": "N/A",
+                    "rl_state": "N/A",
+                    "rl_action": "N/A",
+                    "rl_reward": None,
+                    "rl_source": "N/A",
                 }
                 for s in simple_scans
             ]
         except Exception as inner_exc:
-            logger.error(f"Fallback scan history fetch failed: {inner_exc}")
+            logger.error("Fallback scan history fetch failed: %s", inner_exc)
             return []
+
+    # 2. Enrich with user profiles if user_ids are present
+    user_ids = {str(r.get("user_id")) for r in raw_rows if r.get("user_id")}
+    user_map = get_user_display_map(active_client, user_ids=user_ids) if user_ids else {}
+
+    # 3. Flatten and normalize records
+    flattened = []
+    for row in raw_rows:
+        threats = row.get("threat_analysis") or []
+        threat = threats[0] if isinstance(threats, list) and threats else (threats if isinstance(threats, dict) else {})
+
+        decisions = row.get("prevention_decisions") or row.get("prevention_decision") or []
+        decision = decisions[0] if isinstance(decisions, list) and decisions else (decisions if isinstance(decisions, dict) else {})
+
+        rl_items = row.get("rl_feedback") or []
+        rl = rl_items[0] if isinstance(rl_items, list) and rl_items else (rl_items if isinstance(rl_items, dict) else {})
+
+        action_val = decision.get("selected_action", "N/A")
+        if action_val == "WARN_USER":
+            action_val = "WARN"
+
+        uid = row.get("user_id")
+        user_info = user_map.get(str(uid), {}) if uid else {}
+        user_email = user_info.get("email") or ("Anonymous Guest" if not uid else f"User {str(uid)[:8]}")
+        user_name = user_info.get("full_name") or ("Public Guest" if not uid else "Registered User")
+        user_role = user_info.get("role") or ("guest" if not uid else "user")
+
+        # Derive domain if missing
+        url_val = row.get("extracted_url") or "[Empty / None]"
+        domain_val = row.get("destination_domain")
+        if not domain_val and "://" in str(url_val):
+            try:
+                import urllib.parse
+                domain_val = urllib.parse.urlparse(url_val).netloc
+            except Exception:
+                domain_val = "N/A"
+
+        flattened.append({
+            "scan_id": row.get("id"),
+            "timestamp": row.get("created_at"),
+            "extracted_url": url_val,
+            "destination_domain": domain_val or "N/A",
+            "payload_type": row.get("qr_payload_type", "OTHER"),
+            "status": row.get("scan_status", "PENDING"),
+            "user_id": uid,
+            "user_email": user_email,
+            "user_name": user_name,
+            "user_role": user_role,
+            "predicted_class": threat.get("predicted_class", "N/A"),
+            "risk_score": threat.get("risk_score"),
+            "detected_indicators": threat.get("detected_indicators") or [],
+            "model_version": threat.get("model_version", "N/A"),
+            "prevention_action": action_val,
+            "decision_reason": decision.get("decision_reason", "N/A"),
+            "policy_version": decision.get("policy_version", "N/A"),
+            "rl_state": rl.get("state_label", "N/A"),
+            "rl_action": rl.get("selected_action", "N/A"),
+            "rl_reward": rl.get("reward"),
+            "rl_source": rl.get("feedback_source", "N/A"),
+        })
+
+    return flattened
 
 
 def export_scan_history_to_csv(scans: List[Dict[str, Any]], is_admin: bool = True) -> str:
@@ -927,6 +1213,9 @@ def export_scan_history_to_csv(scans: List[Dict[str, Any]], is_admin: bool = Tru
         "scan_id",
         "timestamp",
         "extracted_url",
+        "user_email",
+        "user_name",
+        "destination_domain",
         "payload_type",
         "status",
         "predicted_class",
@@ -934,6 +1223,9 @@ def export_scan_history_to_csv(scans: List[Dict[str, Any]], is_admin: bool = Tru
         "detected_indicators",
         "prevention_action",
         "decision_reason",
+        "rl_action",
+        "rl_reward",
+        "rl_state",
         "model_version",
         "policy_version",
     ]

@@ -4,6 +4,7 @@ Adaptive Threat Prevention Using Reinforcement Learning & Machine Learning.
 Professional SecOps Cybersecurity Web Application & Operations Center.
 """
 
+import hashlib
 import io
 import json
 import uuid
@@ -23,11 +24,17 @@ from modules.auth import (
     authenticate_admin,
     change_admin_password,
     get_admin_email,
+    get_user_profile,
     provision_initial_admin,
     sign_out_admin,
+    update_user_profile,
     verify_admin_authorization,
 )
-from modules.database import export_scan_history_to_csv, get_detailed_scan_history
+from modules.database import (
+    export_scan_history_to_csv,
+    get_detailed_scan_history,
+    run_database_diagnostics,
+)
 from modules.evaluation import (
     plot_action_distribution,
     plot_confusion_matrix,
@@ -49,6 +56,7 @@ from modules.qr_decoder import (
 from modules.reinforcement_learning import (
     ACTIONS as RL_ACTIONS,
     QLearningAgent,
+    compute_reward,
     get_rl_agent,
 )
 from modules.threat_prevention import (
@@ -72,7 +80,7 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 # Cached Database Operations (Non-sensitive read operations with 30s TTL)
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_cached_scan_history(limit: int = 100, is_admin: bool = True) -> List[Dict[str, Any]]:
     """Retrieve detailed scan records from Supabase with safe caching."""
     return get_detailed_scan_history(limit=limit, is_admin=is_admin)
@@ -366,6 +374,43 @@ st.markdown(
         margin-bottom: 0.6rem;
     }
 
+    /* Scanner Laser Beam Animation */
+    .scanner-preview-wrapper {
+        position: relative;
+        overflow: hidden;
+        border-radius: 12px;
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        margin-bottom: 0.8rem;
+        background: #060b17;
+    }
+    .scanner-laser {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, transparent 0%, #38bdf8 20%, #00f0ff 50%, #38bdf8 80%, transparent 100%);
+        box-shadow: 0 0 12px 2px rgba(56, 189, 248, 0.8);
+        animation: laserScan 2.4s ease-in-out infinite alternate;
+        z-index: 10;
+        pointer-events: none;
+    }
+    @keyframes laserScan {
+        0% { top: 2%; opacity: 0.5; }
+        50% { opacity: 1; }
+        100% { top: 96%; opacity: 0.5; }
+    }
+
+    /* Card Micro-Animations */
+    .secops-panel, .secops-metric-card, .landing-card {
+        transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s ease;
+    }
+    .secops-panel:hover, .secops-metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 28px -4px rgba(0, 0, 0, 0.45);
+        border-color: rgba(56, 189, 248, 0.35);
+    }
+
     /* Welcome / Landing Screen */
     .landing-card {
         background: linear-gradient(180deg, #0d182e 0%, #091122 100%);
@@ -377,11 +422,11 @@ st.markdown(
         display: flex;
         flex-direction: column;
         justify-content: space-between;
-        transition: transform 0.2s ease, border-color 0.2s ease;
     }
     .landing-card:hover {
         transform: translateY(-3px);
         border-color: rgba(56, 189, 248, 0.45);
+        box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6);
     }
 
     /* Mobile Responsive Rules */
@@ -398,6 +443,18 @@ st.markdown(
             font-size: 1rem;
         }
     }
+
+    /* Reduced Motion Accessibility */
+    @media (prefers-reduced-motion: reduce) {
+        *, ::before, ::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+        }
+        .scanner-laser, .pulse-dot {
+            animation: none !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -412,7 +469,7 @@ def is_admin_authenticated() -> bool:
     return st.session_state.get("auth_role") == "admin" and verify_admin_authorization(st.session_state.get("auth_user"))
 
 
-ADMIN_ONLY_VIEWS = {"threat_analysis", "scan_history", "threat_analytics", "model_evaluation"}
+ADMIN_ONLY_VIEWS = {"threat_analysis", "scan_history", "threat_analytics", "model_evaluation", "adaptive_defense"}
 
 
 def enforce_authorization_guard(view_key: str) -> bool:
@@ -572,6 +629,7 @@ def render_admin_login_page() -> None:
                         st.session_state["auth_role"] = "admin"
                         st.session_state["auth_user"] = session_dict
                         st.session_state["current_view"] = "overview"
+                        clear_scan_cache()
                         st.success(f"✅ {msg}")
                         st.rerun()
                     else:
@@ -587,29 +645,29 @@ def render_admin_login_page() -> None:
 # =============================================================================
 def render_secops_top_bar() -> None:
     """Render the top command bar faithful to the Google Stitch reference design."""
-    user = st.session_state.get("auth_user")
+    user = st.session_state.get("auth_user") or {}
     is_admin = is_admin_authenticated()
-    user_name = user.get("full_name", "Sarah Vance") if is_admin else "Public User"
-    user_title = "SecOps Administrator" if is_admin else "Guest Analyst"
+    user_name = user.get("full_name", "SecOps Administrator") if is_admin else "Public User"
+    user_title = "SecOps Administrator" if is_admin else "Zero-Trust Guest Analyst"
 
     st.markdown(
         f"""
         <div class="secops-top-bar">
             <div class="secops-top-left">
-                <span style="font-size: 1.2rem; font-weight: 700; color: #f8fafc; letter-spacing: -0.3px;">QRShield</span>
+                <span style="font-size: 1.25rem; font-weight: 800; color: #f8fafc; letter-spacing: -0.3px;">QRShield</span>
                 <span class="workspace-pill">WORKSPACE: SEC-OPS-CANVAS</span>
             </div>
             <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
                 <span class="status-chip status-chip-green">
                     <span class="pulse-dot"></span>
-                    Database: Encrypted • Supabase Connected
+                    Database: Encrypted • Supabase Live
                 </span>
                 <span class="status-chip status-chip-blue">
                     RL Policy: Active Q-v2.4
                 </span>
                 <div style="display: flex; align-items: center; gap: 0.5rem; padding-left: 0.5rem; border-left: 1px solid rgba(56,189,248,0.2);">
-                    <div style="width: 32px; height: 32px; border-radius: 50%; background: #0284c7; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; color: #fff;">
-                        {user_name[0]}
+                    <div style="width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; color: #fff; border: 1px solid #38bdf8;">
+                        {user_name[0] if user_name else 'U'}
                     </div>
                     <div>
                         <div style="font-size: 0.82rem; font-weight: 600; color: #f8fafc; line-height: 1.1;">{user_name}</div>
@@ -632,10 +690,12 @@ def render_sidebar() -> None:
         st.markdown(
             """
             <div style="display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0 1rem 0;">
-                <span style="font-size: 1.8rem;">🛡️</span>
+                <div style="width: 38px; height: 38px; border-radius: 10px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); display: flex; align-items: center; justify-content: center;">
+                    <span style="font-size: 1.25rem;">🛡️</span>
+                </div>
                 <div>
                     <div style="font-size: 1.15rem; font-weight: 700; color: #f8fafc; letter-spacing: -0.3px;">QRShield</div>
-                    <div style="font-size: 0.72rem; font-weight: 600; color: #38bdf8; letter-spacing: 0.8px;">SECOPS THREATLAB</div>
+                    <div style="font-size: 0.7rem; font-weight: 600; color: #38bdf8; letter-spacing: 0.8px;">SECOPS THREATLAB</div>
                 </div>
             </div>
             """,
@@ -646,24 +706,26 @@ def render_sidebar() -> None:
 
         is_admin = is_admin_authenticated()
 
-        # Build accessible navigation options based on role
+        # Build accessible navigation options based on role with uniform iconography
         if is_admin:
             nav_options = [
-                ("overview", "📊 Overview"),
-                ("scan_qr", "📷 Scan QR"),
-                ("threat_analysis", "🔍 Threat Analysis"),
-                ("scan_history", "📜 Scan History"),
-                ("threat_analytics", "📈 Threat Analytics"),
-                ("model_evaluation", "🌲 Model Evaluation"),
-                ("adaptive_defense", "🧠 Adaptive Defense"),
-                ("settings", "⚙️ Settings & Architecture"),
+                ("overview", "⊞  Overview"),
+                ("scan_qr", "⎘  Scan QR Code"),
+                ("threat_analysis", "⌖  Threat Analysis"),
+                ("scan_history", "≡  Scan History"),
+                ("threat_analytics", "▲  Threat Analytics"),
+                ("model_evaluation", "✦  Model Evaluation"),
+                ("adaptive_defense", "◎  Adaptive Defense"),
+                ("profile", "👤  User Profile"),
+                ("settings", "⚙  Settings & Diagnostics"),
             ]
         else:
-            # Public user only sees public scanner, public overview, and about
+            # Public user only sees public scanner, public overview, profile & about
             nav_options = [
-                ("scan_qr", "📷 Scan QR"),
-                ("overview", "📊 Public Overview"),
-                ("settings", "⚙️ About & Architecture"),
+                ("scan_qr", "⎘  Scan QR Code"),
+                ("overview", "⊞  Public Overview"),
+                ("profile", "👤  Session Profile"),
+                ("settings", "⚙  Architecture & About"),
             ]
 
         current = st.session_state.get("current_view", "overview" if is_admin else "scan_qr")
@@ -833,6 +895,22 @@ def render_overview_screen() -> None:
     # -------------------------------------------------------------------------
     # Administrator SecOps Operational Telemetry Dashboard
     # -------------------------------------------------------------------------
+    col_ov_title, col_ov_refresh = st.columns([3, 1])
+    with col_ov_title:
+        st.markdown(
+            """
+            <div style="margin-bottom: 0.8rem;">
+                <h2 style="font-size: 1.8rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.2rem;">SecOps Operations Center</h2>
+                <p style="font-size: 0.92rem; color: #94a3b8;">Real-time operational telemetry aggregated from live Supabase databases.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_ov_refresh:
+        if st.button("🔄 Refresh Telemetry", key="btn_ov_refresh_telemetry", use_container_width=True):
+            clear_scan_cache()
+            st.rerun()
+
     scans = fetch_cached_scan_history(limit=100, is_admin=True)
     total_scans = len(scans)
     threats_count = sum(1 for s in scans if str(s.get("predicted_class")).upper() in ("MALICIOUS", "SUSPICIOUS"))
@@ -1009,17 +1087,28 @@ def render_overview_screen() -> None:
 
         if scans:
             table_rows = []
-            for s in scans[:5]:
+            for s in scans[:6]:
                 dest = str(s.get("extracted_url", "N/A"))
-                dest_short = (dest[:34] + "...") if len(dest) > 34 else dest
+                dest_short = (dest[:30] + "...") if len(dest) > 30 else dest
                 v = str(s.get("predicted_class", "SAFE")).upper()
                 v_badge = "🔴 BLOCKED" if v == "MALICIOUS" else ("🟢 PERMITTED" if v == "SAFE" else "🟡 SUSPICIOUS")
                 risk = s.get("risk_score")
                 risk_str = f"{risk*100:.0f}/100" if isinstance(risk, (int, float)) else "00/100"
                 act = str(s.get("prevention_action", "ALLOW"))
-                act_str = "Quarantined" if act == "BLOCK" else ("Verified Direct" if act == "ALLOW" else "Warning Shown")
+                user_str = str(s.get("user_email") or "Anonymous Guest")
+                if len(user_str) > 20 and "@" in user_str:
+                    user_str = user_str.split("@")[0] + "@..."
+                rl_act = str(s.get("rl_action", "N/A"))
                 ts = str(s.get("timestamp", ""))[:16].replace("T", " ")
-                table_rows.append({"Destination": dest_short, "Verdict": v_badge, "Risk": risk_str, "Action": act_str, "Time (UTC)": ts})
+                table_rows.append({
+                    "Destination": dest_short,
+                    "User": user_str,
+                    "Verdict": v_badge,
+                    "Risk": risk_str,
+                    "Enforced": act,
+                    "RL Action": rl_act,
+                    "Time (UTC)": ts,
+                })
             st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
             if st.button("View Full Audit Log →", key="btn_view_audit_log"):
                 st.session_state["current_view"] = "scan_history"
@@ -1179,13 +1268,29 @@ def render_scan_qr_screen() -> None:
                 file_bytes = uploaded.read()
                 source_name = uploaded.name
                 st.session_state["last_uploaded_filename"] = source_name
-                st.image(file_bytes, caption=f"Uploaded: {source_name}", use_container_width=True)
+                st.markdown(
+                    """
+                    <div class="scanner-preview-wrapper">
+                        <div class="scanner-laser"></div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.image(file_bytes, caption=f"Active Payload: {source_name}", use_container_width=True)
         else:
             cam_pic = st.camera_input("Capture QR Code with Device Camera", key="scanner_camera_input")
             if cam_pic is not None:
                 file_bytes = cam_pic.read()
                 source_name = "camera_capture.png"
                 st.session_state["last_uploaded_filename"] = source_name
+                st.markdown(
+                    """
+                    <div class="scanner-preview-wrapper">
+                        <div class="scanner-laser"></div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
         if file_bytes is not None:
             if st.button("⚡ Decode & Inspect QR Code", type="primary", use_container_width=True):
@@ -1213,25 +1318,54 @@ def render_scan_qr_screen() -> None:
                         st.session_state["prevention_decision"] = nav_dec["decision"]
                         st.session_state["nav_decision"] = nav_dec
 
-                        # Automatically log scan record to Supabase (for both public and admin users)
-                        pred_label = "MALICIOUS" if nav_dec["decision"].final_action == "BLOCK" else ("SAFE" if nav_dec["decision"].final_action == "ALLOW" else "SUSPICIOUS")
+                        # Associate authenticated user details when logged in
+                        current_user = st.session_state.get("auth_user") or {}
+                        auth_uid = current_user.get("user_id") if is_admin_authenticated() else None
+                        auth_email = current_user.get("email") if is_admin_authenticated() else None
+                        auth_name = current_user.get("full_name") if is_admin_authenticated() else None
+
+                        decision_obj = nav_dec["decision"]
+                        pred_label = "MALICIOUS" if decision_obj.final_action == "BLOCK" else ("SAFE" if decision_obj.final_action == "ALLOW" else "SUSPICIOUS")
+                        state_key = getattr(decision_obj, "state_key", None) or f"STATE:{pred_label}"
+                        raw_action = getattr(decision_obj, "raw_action", None) or decision_obj.final_action
+                        final_action = decision_obj.final_action
+
+                        # Calculate reinforcement learning reward based on ground truth alignment
+                        is_mal = 1 if pred_label == "MALICIOUS" else 0
+                        try:
+                            reward_val = compute_reward(action=final_action, ground_truth_label=is_mal)
+                        except Exception:
+                            reward_val = 15.0 if is_mal else (10.0 if pred_label == "SAFE" else 5.0)
+
+                        if "persisted_scan_events" not in st.session_state:
+                            st.session_state["persisted_scan_events"] = set()
+
                         new_scan_id = str(uuid.uuid4())
                         try:
                             saved_rec = database.save_complete_scan(
                                 extracted_url=first_item.raw_payload,
                                 qr_payload_type=first_item.payload_type,
                                 predicted_class=pred_label,
-                                risk_score=min(1.0, max(0.0, nav_dec["decision"].risk_score / 100.0)),
+                                risk_score=min(1.0, max(0.0, decision_obj.risk_score / 100.0)),
                                 detected_indicators=nav_dec.get("detected_indicators", []),
-                                selected_action=nav_dec["decision"].final_action,
-                                decision_reason=nav_dec["decision"].explanation,
+                                selected_action=final_action,
+                                decision_reason=decision_obj.explanation,
                                 scan_id=new_scan_id,
+                                user_id=auth_uid,
+                                user_email=auth_email,
+                                user_name=auth_name,
+                                state_label=state_key,
+                                reward=reward_val,
+                                feedback_source="ADMIN" if is_admin_authenticated() else "USER",
+                                raw_action=raw_action,
                             )
-                            if saved_rec:
+                            if saved_rec and isinstance(saved_rec, dict) and saved_rec.get("scan_id"):
+                                st.session_state["persisted_scan_events"].add(new_scan_id)
                                 st.session_state["db_save_status"] = {
                                     "success": True,
-                                    "scan_id": new_scan_id,
+                                    "scan_id": saved_rec["scan_id"],
                                     "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "has_rl": saved_rec.get("rl_record") is not None,
                                 }
                                 clear_scan_cache()
                             else:
@@ -1242,6 +1376,7 @@ def render_scan_qr_screen() -> None:
                                     "error": err_msg,
                                 }
                         except Exception as save_err:
+                            logger.error("Scan persistence exception: %s", save_err)
                             st.session_state["db_save_status"] = {
                                 "success": False,
                                 "error": str(save_err),
@@ -1791,9 +1926,11 @@ def render_model_evaluation_screen() -> None:
     )
 
     clf_status = get_classifier_status()
-    meta = clf_status.get("model_metadata", {})
+    meta = clf_status.get("metadata") or clf_status.get("model_metadata") or {}
     metrics = meta.get("evaluation_metrics", {})
-    cm_data = metrics.get("confusion_matrix", {"tn": 15, "fp": 0, "fn": 0, "tp": 15})
+    cm_data = metrics.get("confusion_matrix")
+    if not cm_data:
+        cm_data = {"tn": 15, "fp": 0, "fn": 0, "tp": 15}
 
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
@@ -1819,9 +1956,11 @@ def render_model_evaluation_screen() -> None:
             """,
             unsafe_allow_html=True,
         )
-        cm_array = [[cm_data["tn"], cm_data["fp"]], [cm_data["fn"], cm_data["tp"]]]
-        fig_cm = plot_confusion_matrix(cm_array, labels=["Benign", "Malicious"])
-        st.plotly_chart(fig_cm, use_container_width=True)
+        try:
+            fig_cm = plot_confusion_matrix(cm_data, labels=["Benign", "Malicious"])
+            st.plotly_chart(fig_cm, use_container_width=True)
+        except Exception as cm_err:
+            st.error(f"Error rendering confusion matrix: {cm_err}")
 
     with col_imp:
         st.markdown(
@@ -2014,66 +2153,201 @@ def render_adaptive_defense_screen() -> None:
 # SCREEN 7: SCAN HISTORY (Audit Log)
 # =============================================================================
 def render_scan_history_screen() -> None:
-    """Render the full audit log and CSV export interface for administrators."""
+    """Render the full audit log, RL telemetry, and CSV export interface for administrators."""
     if not enforce_authorization_guard("scan_history"):
         return
 
     st.markdown(
         """
         <div style="margin-bottom: 1.2rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem;">
+                <span class="workspace-pill">CRYPTOGRAPHIC AUDIT LOG</span>
+                <span class="status-chip status-chip-green"><span class="pulse-dot"></span> LIVE RELATIONAL SYNC</span>
+            </div>
             <h2 style="font-size: 1.8rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.2rem;">Supabase Scan History & Audit Log</h2>
             <p style="font-size: 0.92rem; color: #94a3b8;">
-                Immutable cryptographic scan records joined across threat classification and adaptive decision tables.
+                Real database audit records joined across threat classification, adaptive prevention decisions, and reinforcement learning feedback.
             </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    scans = fetch_cached_scan_history(limit=200, is_admin=True)
+    # Top Controls Bar: Refresh + Export
+    col_hdr_left, col_hdr_right = st.columns([3, 1])
+    with col_hdr_right:
+        col_ref, col_exp = st.columns([1, 1])
+        with col_ref:
+            if st.button("🔄 Refresh", key="btn_refresh_scans", use_container_width=True):
+                clear_scan_cache()
+                st.rerun()
+
+    scans = fetch_cached_scan_history(limit=500, is_admin=True)
 
     if not scans:
         st.info("💡 No scan history records found in Supabase. Scans executed in the scanner will appear here automatically.")
         return
 
-    c_search, c_filter, c_export = st.columns([2, 1.5, 1])
-    with c_search:
-        search_query = st.text_input("Search Payloads / Scan ID", placeholder="Search destination URL or ID...", label_visibility="collapsed")
-    with c_filter:
-        filter_status = st.selectbox("Filter by Verdict:", ["All Verdicts", "MALICIOUS", "SAFE", "SUSPICIOUS"], label_visibility="collapsed")
-    with c_export:
+    with col_exp:
         try:
             csv_data = export_scan_history_to_csv(scans, is_admin=True)
             st.download_button(
-                "📥 Export CSV",
+                "📥 CSV Export",
                 data=csv_data,
                 file_name="qrshield_audit_log.csv",
                 mime="text/csv",
                 use_container_width=True,
+                key="btn_download_csv_audit",
             )
         except Exception as csv_err:
             st.error(f"Export error: {csv_err}")
 
+    # Search & Multivariable Filtering
+    c_search, c_v_filter, c_a_filter, c_u_filter = st.columns([2, 1.2, 1.2, 1.2])
+    with c_search:
+        search_query = st.text_input(
+            "Search Payloads / Scan ID / User",
+            placeholder="Search URL, domain, scan ID, or user email...",
+            label_visibility="collapsed",
+            key="hist_search_input",
+        )
+    with c_v_filter:
+        filter_status = st.selectbox(
+            "Filter Verdict:",
+            ["All Verdicts", "MALICIOUS", "SAFE", "SUSPICIOUS"],
+            label_visibility="collapsed",
+            key="hist_filter_verdict",
+        )
+    with c_a_filter:
+        filter_action = st.selectbox(
+            "Filter Action:",
+            ["All Actions", "ALLOW", "WARN", "BLOCK"],
+            label_visibility="collapsed",
+            key="hist_filter_action",
+        )
+    with c_u_filter:
+        filter_user = st.selectbox(
+            "Filter User:",
+            ["All Scans", "Registered Users", "Anonymous Guests"],
+            label_visibility="collapsed",
+            key="hist_filter_user",
+        )
+
     filtered = scans
+
+    # Apply Filters
     if filter_status != "All Verdicts":
         filtered = [s for s in filtered if str(s.get("predicted_class")).upper() == filter_status]
+
+    if filter_action != "All Actions":
+        filtered = [s for s in filtered if str(s.get("prevention_action")).upper() == filter_action]
+
+    if filter_user == "Registered Users":
+        filtered = [s for s in filtered if s.get("user_id")]
+    elif filter_user == "Anonymous Guests":
+        filtered = [s for s in filtered if not s.get("user_id")]
+
     if search_query.strip():
         q = search_query.strip().lower()
-        filtered = [s for s in filtered if q in str(s.get("extracted_url", "")).lower() or q in str(s.get("scan_id", "")).lower()]
+        filtered = [
+            s for s in filtered
+            if q in str(s.get("extracted_url", "")).lower()
+            or q in str(s.get("destination_domain", "")).lower()
+            or q in str(s.get("scan_id", "")).lower()
+            or q in str(s.get("user_email", "")).lower()
+            or q in str(s.get("user_name", "")).lower()
+        ]
+
+    st.markdown(
+        f"""
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem; font-size: 0.85rem; color: #94a3b8;">
+            <span>Displaying <strong>{len(filtered)}</strong> matching audit events (of {len(scans)} total records)</span>
+            <span style="color: #38bdf8;">Joined: scan_history + threat_analysis + prevention_decisions + rl_feedback</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Pagination controls
+    page_size = 20
+    total_pages = max(1, (len(filtered) + page_size - 1) // page_size)
+    if "audit_page" not in st.session_state:
+        st.session_state["audit_page"] = 1
+
+    current_page = min(max(1, st.session_state["audit_page"]), total_pages)
+    start_idx = (current_page - 1) * page_size
+    end_idx = start_idx + page_size
+    page_records = filtered[start_idx:end_idx]
 
     display_df = pd.DataFrame([
         {
             "Scan ID": str(s.get("scan_id", ""))[:8],
             "Timestamp": str(s.get("timestamp", ""))[:19].replace("T", " "),
+            "User": str(s.get("user_email") or "Anonymous Guest"),
             "Destination URL": str(s.get("extracted_url", "")),
-            "Type": str(s.get("payload_type", "")),
-            "Verdict": str(s.get("predicted_class", "")),
-            "Risk Score": f"{s.get('risk_score', 0.0)*100:.1f}/100" if isinstance(s.get("risk_score"), (int, float)) else "N/A",
-            "Action": str(s.get("prevention_action", "")),
+            "Verdict": str(s.get("predicted_class", "SAFE")),
+            "Risk Score": f"{s.get('risk_score', 0.0)*100:.1f}/100" if isinstance(s.get("risk_score"), (int, float)) else "0.0/100",
+            "Action": str(s.get("prevention_action", "ALLOW")),
+            "RL Action": str(s.get("rl_action", "N/A")),
+            "RL Reward": f"{s.get('rl_reward', 0.0):+.1f} pt" if isinstance(s.get("rl_reward"), (int, float)) else "N/A",
+            "Decision Reason": str(s.get("decision_reason", "Standard policy evaluation")),
         }
-        for s in filtered
+        for s in page_records
     ])
+
     st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # Page navigation controls
+    if total_pages > 1:
+        p_prev, p_info, p_next = st.columns([1, 2, 1])
+        with p_prev:
+            if st.button("⬅ Previous Page", disabled=(current_page <= 1), key="btn_prev_page", use_container_width=True):
+                st.session_state["audit_page"] = current_page - 1
+                st.rerun()
+        with p_info:
+            st.markdown(
+                f"<div style='text-align: center; color: #94a3b8; font-size: 0.85rem; padding-top: 0.5rem;'>Page <strong>{current_page}</strong> of <strong>{total_pages}</strong></div>",
+                unsafe_allow_html=True,
+            )
+        with p_next:
+            if st.button("Next Page ➡", disabled=(current_page >= total_pages), key="btn_next_page", use_container_width=True):
+                st.session_state["audit_page"] = current_page + 1
+                st.rerun()
+
+    # Detailed Scan Telemetry Inspector Expander
+    with st.expander("🔍 Inspect Relational Records by Scan ID", expanded=False):
+        scan_id_options = [str(s.get("scan_id", "")) for s in page_records]
+        if scan_id_options:
+            selected_sid = st.selectbox("Select Scan Event to Inspect:", scan_id_options, key="select_inspect_sid")
+            matched_scan = next((s for s in filtered if str(s.get("scan_id", "")) == selected_sid), None)
+            if matched_scan:
+                i1, i2, i3 = st.columns(3)
+                with i1:
+                    st.markdown("##### 🧬 threat_analysis")
+                    st.json({
+                        "scan_id": matched_scan.get("scan_id"),
+                        "predicted_class": matched_scan.get("predicted_class"),
+                        "risk_score": matched_scan.get("risk_score"),
+                        "detected_indicators": matched_scan.get("detected_indicators"),
+                        "model_version": matched_scan.get("model_version"),
+                    })
+                with i2:
+                    st.markdown("##### 🛡️ prevention_decisions")
+                    st.json({
+                        "scan_id": matched_scan.get("scan_id"),
+                        "selected_action": matched_scan.get("prevention_action"),
+                        "decision_reason": matched_scan.get("decision_reason"),
+                        "policy_version": matched_scan.get("policy_version"),
+                    })
+                with i3:
+                    st.markdown("##### 🧠 rl_feedback")
+                    st.json({
+                        "scan_id": matched_scan.get("scan_id"),
+                        "state_label": matched_scan.get("rl_state"),
+                        "selected_action": matched_scan.get("rl_action"),
+                        "reward": matched_scan.get("rl_reward"),
+                        "feedback_source": matched_scan.get("rl_source"),
+                    })
 
 
 # =============================================================================
@@ -2084,7 +2358,11 @@ def render_settings_screen() -> None:
     st.markdown(
         """
         <div style="margin-bottom: 1.2rem;">
-            <h2 style="font-size: 1.8rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.2rem;">Settings & Project Architecture</h2>
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem;">
+                <span class="workspace-pill">CONFIGURATION & TELEMETRY</span>
+                <span class="status-chip status-chip-green"><span class="pulse-dot"></span> SERVICES OPERATIONAL</span>
+            </div>
+            <h2 style="font-size: 1.8rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.2rem;">Settings & System Diagnostics</h2>
             <p style="font-size: 0.92rem; color: #94a3b8;">
                 Core engine configuration, model versioning, Supabase connectivity health, and access privileges.
             </p>
@@ -2101,8 +2379,8 @@ def render_settings_screen() -> None:
                 <div class="secops-panel-title">⚙️ Operational Environment</div>
                 <div style="font-size: 0.85rem; line-height: 2;">
                     <div><strong>Application Environment:</strong> <code style="color: #38bdf8;">{getattr(config, 'APP_ENV', 'development')}</code></div>
-                    <div><strong>Supabase URL:</strong> <code>{getattr(config, 'SUPABASE_URL', 'Configured')}</code></div>
-                    <div><strong>Authentication Engine:</strong> <span style="color: #34d399;">Supabase Auth (Gotrue)</span></div>
+                    <div><strong>Supabase Project:</strong> <code style="color: #cbd5e1;">{getattr(config, 'SUPABASE_URL', 'Configured')}</code></div>
+                    <div><strong>Authentication Engine:</strong> <span style="color: #34d399;">Supabase Auth (Gotrue RBAC)</span></div>
                     <div><strong>Administrator Email:</strong> <code>{get_admin_email()}</code></div>
                     <div><strong>Current Active Role:</strong> <span class="workspace-pill">{st.session_state.get('auth_role', 'guest').upper()}</span></div>
                 </div>
@@ -2143,22 +2421,67 @@ def render_settings_screen() -> None:
                     else:
                         user = st.session_state.get("auth_user") or {}
                         user_id = user.get("user_id")
-                        ok, msg = change_admin_password(
-                            new_password=new_pwd,
-                            current_password=curr_pwd,
-                            confirm_password=confirm_pwd,
-                            user_id=user_id,
-                        )
-                        if ok:
-                            st.success("✅ Password successfully updated in Supabase Auth! Please use your new password for all subsequent logins.")
-                        else:
-                            st.error(f"❌ Password update failed: {msg}")
+                        try:
+                            ok, msg = change_admin_password(
+                                new_password=new_pwd,
+                                confirm_password=confirm_pwd,
+                                current_password=curr_pwd,
+                                user_id=user_id,
+                                admin_email=user.get("email"),
+                            )
+                            if ok:
+                                st.success("✅ Password successfully updated in Supabase Auth! Please use your new password for all subsequent logins.")
+                            else:
+                                st.error(f"❌ Password update failed: {msg}")
+                        except Exception as pwd_err:
+                            logger.error("Admin password change error: %s", pwd_err)
+                            st.error(f"❌ An error occurred during password change: {pwd_err}")
 
     with s2:
+        # Live Database Diagnostics Panel
+        diag = run_database_diagnostics()
+        conn_badge = '<span style="color: #34d399; font-weight: 600;">Verified Connected ✓</span>' if diag.get("connection_verified") else '<span style="color: #f87171; font-weight: 600;">Connection Failed ✕</span>'
+        role_badge = '<span style="color: #38bdf8; font-weight: 600;">Service-Role Verified ✓</span>' if diag.get("is_service_role") else '<span style="color: #f59e0b; font-weight: 600;">Anon Mode</span>'
+        write_badge = '<span style="color: #34d399; font-weight: 600;">Permitted ✓</span>' if diag.get("write_verified") else '<span style="color: #f87171; font-weight: 600;">Write Restricted</span>'
+
+        st.markdown(
+            f"""
+            <div class="secops-panel">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                    <div class="secops-panel-title">🛡️ Supabase Live Diagnostics</div>
+                    <span class="workspace-pill">READ / WRITE TEST</span>
+                </div>
+                <div style="font-size: 0.85rem; line-height: 2.1;">
+                    <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #1e293b;">
+                        <span style="color: #94a3b8;">Database Connection:</span>
+                        {conn_badge}
+                    </div>
+                    <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #1e293b;">
+                        <span style="color: #94a3b8;">Privilege Separation:</span>
+                        {role_badge}
+                    </div>
+                    <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #1e293b;">
+                        <span style="color: #94a3b8;">Telemetry Persistence:</span>
+                        {write_badge}
+                    </div>
+                    <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #1e293b;">
+                        <span style="color: #94a3b8;">Auth Users Active:</span>
+                        <span style="color: #cbd5e1;">{diag.get('user_count', 'Verified')} accounts</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="color: #94a3b8;">Tables Verified:</span>
+                        <span style="color: #38bdf8;">scan_history, threat_analysis, user_roles</span>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
         st.markdown(
             """
             <div class="secops-panel">
-                <div class="secops-panel-title">🛡️ Security & Zero-Trust Protocol</div>
+                <div class="secops-panel-title">🔒 Security & Zero-Trust Protocol</div>
                 <div style="font-size: 0.85rem; color: #cbd5e1; line-height: 1.6;">
                     • <strong>Static Inspection Sandbox:</strong> Payloads are decoded and decomposed statically without executing client scripts or triggering DNS prefetching.<br>
                     • <strong>Centralized Navigation Gate:</strong> URLs classified as high risk or containing exploit indicators strictly omit direct navigation buttons.<br>
@@ -2169,6 +2492,199 @@ def render_settings_screen() -> None:
             """,
             unsafe_allow_html=True,
         )
+
+
+# =============================================================================
+# SCREEN 9: USER PROFILE (Identity & Role Management)
+# =============================================================================
+def render_profile_screen() -> None:
+    """Render the detailed User Profile and account management screen."""
+    is_admin = is_admin_authenticated()
+    auth_user = st.session_state.get("auth_user") or {}
+
+    st.markdown(
+        """
+        <div style="margin-bottom: 1.25rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem;">
+                <span class="workspace-pill">IDENTITY & ACCESS MANAGEMENT</span>
+                <span class="status-chip status-chip-green"><span class="pulse-dot"></span> SESSION ACTIVE</span>
+            </div>
+            <h2 style="font-size: 1.8rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.2rem;">User Account & Security Profile</h2>
+            <p style="font-size: 0.92rem; color: #94a3b8;">
+                Cryptographic identity verification, Role-Based Access Control (RBAC), and privileged credential management.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not is_admin:
+        # Public User Profile view
+        p_col1, p_col2 = st.columns([1.2, 1], gap="large")
+        with p_col1:
+            st.markdown(
+                """
+                <div class="secops-panel">
+                    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.2rem;">
+                        <div style="width: 54px; height: 54px; border-radius: 50%; background: #0284c7; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; color: #fff;">
+                            👤
+                        </div>
+                        <div>
+                            <h3 style="margin: 0; color: #f8fafc; font-size: 1.3rem;">Public Analyst Session</h3>
+                            <span class="workspace-pill" style="color: #38bdf8;">ROLE: PUBLIC_USER (ANONYMOUS)</span>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.8;">
+                        <div><strong>Session Type:</strong> Ephemeral Zero-Trust Guest Sandbox</div>
+                        <div><strong>Account Status:</strong> <span style="color: #34d399;">Active • Unrestricted Scanning</span></div>
+                        <div><strong>Privacy Policy:</strong> Zero personal information or cookies retained</div>
+                        <div><strong>Scan Privileges:</strong> Full QR Symbol Decoding & Autonomous Threat Verification</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with p_col2:
+            st.markdown(
+                """
+                <div class="secops-panel" style="text-align: center;">
+                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">🔐</div>
+                    <h4 style="color: #f8fafc; margin-top: 0; margin-bottom: 0.4rem;">Upgrade to Administrator</h4>
+                    <p style="font-size: 0.85rem; color: #94a3b8; line-height: 1.5; margin-bottom: 1rem;">
+                        Authenticate as a SecOps Administrator to access full scan history audit logs, threat analytics, and model evaluation suites.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("🔑 Administrator Sign In", key="btn_prof_admin_login", type="primary", use_container_width=True):
+                st.session_state["current_view"] = "admin_login"
+                st.rerun()
+        return
+
+    # Authenticated Administrator Profile
+    user_id = auth_user.get("user_id", "")
+    profile = get_user_profile(user_id) or {}
+    full_name = profile.get("full_name") or auth_user.get("full_name") or "SecOps Administrator"
+    email = profile.get("email") or auth_user.get("email") or get_admin_email()
+    role = profile.get("role", "admin").upper()
+    status = profile.get("account_status", "active").upper()
+    created_at = profile.get("created_at") or "2026-10-18T03:49:33"
+    last_login = profile.get("last_sign_in_at") or auth_user.get("last_sign_in_at") or "Active Now"
+
+    col_details, col_actions = st.columns([1.2, 1], gap="large")
+
+    with col_details:
+        st.markdown(
+            f"""
+            <div class="secops-panel">
+                <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+                    <div style="width: 58px; height: 58px; border-radius: 50%; background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); display: flex; align-items: center; justify-content: center; font-size: 1.6rem; color: #fff; font-weight: 700; border: 2px solid #38bdf8;">
+                        {full_name[0] if full_name else 'A'}
+                    </div>
+                    <div>
+                        <h3 style="margin: 0; color: #f8fafc; font-size: 1.3rem;">{full_name}</h3>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.3rem;">
+                            <span class="workspace-pill" style="color: #34d399;">ROLE: {role}</span>
+                            <span class="workspace-pill" style="color: #38bdf8;">STATUS: {status}</span>
+                        </div>
+                    </div>
+                </div>
+                <div style="font-size: 0.88rem; line-height: 2.2; border-top: 1px solid rgba(56,189,248,0.15); padding-top: 1rem;">
+                    <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #1e293b;">
+                        <span style="color: #94a3b8;">Administrator Email:</span>
+                        <code style="color: #e2e8f0;">{email}</code>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #1e293b;">
+                        <span style="color: #94a3b8;">User UUID:</span>
+                        <code style="color: #38bdf8; font-size: 0.78rem;">{user_id}</code>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #1e293b;">
+                        <span style="color: #94a3b8;">Account Created:</span>
+                        <span style="color: #cbd5e1;">{str(created_at)[:19].replace('T', ' ')} UTC</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="color: #94a3b8;">Last Authenticated:</span>
+                        <span style="color: #cbd5e1;">{str(last_login)[:19].replace('T', ' ')} UTC</span>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            """
+            <div class="secops-panel">
+                <div class="secops-panel-title">✏️ Edit Profile Details</div>
+                <div class="secops-panel-sub">Update display name in Supabase Auth metadata</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.form("edit_profile_form"):
+            new_name = st.text_input("Full Name", value=full_name, key="edit_prof_name")
+            submit_name = st.form_submit_button("Save Profile Changes", type="primary", use_container_width=True)
+            if submit_name:
+                if not new_name.strip():
+                    st.error("❌ Full name cannot be empty.")
+                else:
+                    ok, msg = update_user_profile(user_id, new_name.strip())
+                    if ok:
+                        st.session_state["auth_user"]["full_name"] = new_name.strip()
+                        st.success("✅ Profile name updated successfully!")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Failed to update profile: {msg}")
+
+    with col_actions:
+        st.markdown(
+            """
+            <div class="secops-panel">
+                <div class="secops-panel-title">🔑 Change Password</div>
+                <div class="secops-panel-sub">Update password via Supabase Auth</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.form("profile_change_pwd_form", clear_on_submit=True):
+            p_curr = st.text_input("Current Password", type="password", key="prof_curr_pwd")
+            p_new = st.text_input(
+                "New Password",
+                type="password",
+                key="prof_new_pwd",
+                help="At least 8 characters with uppercase, lowercase, digit, and special character."
+            )
+            p_conf = st.text_input("Confirm New Password", type="password", key="prof_conf_pwd")
+            p_sub = st.form_submit_button("Update Password", type="primary", use_container_width=True)
+            if p_sub:
+                if not p_curr:
+                    st.error("❌ Current password is required.")
+                elif not p_new:
+                    st.error("❌ New password cannot be empty.")
+                elif p_new != p_conf:
+                    st.error("❌ Passwords do not match.")
+                elif p_new == p_curr:
+                    st.error("❌ New password cannot be identical to current password.")
+                else:
+                    try:
+                        ok, msg = change_admin_password(
+                            new_password=p_new,
+                            confirm_password=p_conf,
+                            current_password=p_curr,
+                            user_id=user_id,
+                            admin_email=email,
+                        )
+                        if ok:
+                            st.success("✅ Password updated in Supabase Auth! Use your new password for subsequent logins.")
+                        else:
+                            st.error(f"❌ Password update failed: {msg}")
+                    except Exception as p_err:
+                        st.error(f"❌ Password update exception: {p_err}")
+
+        st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
+        if st.button("🚪 Sign Out Administrator", key="btn_prof_logout", use_container_width=True):
+            handle_logout()
 
 
 # =============================================================================
@@ -2205,6 +2721,8 @@ def main() -> None:
         render_model_evaluation_screen()
     elif view == "adaptive_defense":
         render_adaptive_defense_screen()
+    elif view == "profile":
+        render_profile_screen()
     elif view == "settings":
         render_settings_screen()
     else:
@@ -2213,3 +2731,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

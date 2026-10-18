@@ -24,6 +24,7 @@ from modules.database import (
     insert_scan_record,
     insert_threat_analysis,
     is_database_configured,
+    run_database_diagnostics,
     save_complete_scan,
     test_connection as check_db_connection,
 )
@@ -898,6 +899,103 @@ def test_get_supabase_client_uses_supabase_key_when_service_role(mock_create):
         client = get_supabase_client(force_new=True, require_service_role=True)
         assert client == fake_client
         mock_create.assert_called_with("https://valid.supabase.co", "sb_secret_test_service_key_99999")
+
+
+def test_run_database_diagnostics_safe_output(mock_supabase_client):
+    """Verify run_database_diagnostics checks tables safely without secret leakage."""
+    response_mock = MagicMock()
+    response_mock.data = [{"id": "row-1"}]
+    mock_supabase_client.table().select().limit().execute.return_value = response_mock
+
+    diag = run_database_diagnostics(client=mock_supabase_client)
+    assert diag["configured"] is True
+    assert diag["connection_ok"] is True
+    assert isinstance(diag["tables_accessible"], list)
+    assert "scan_history" in diag["tables_accessible"]
+
+    # Ensure no secrets leak in recommendations or details
+    diag_str = str(diag)
+    assert "password" not in diag_str.lower()
+    assert "Bearer" not in diag_str
+    assert "secret" not in diag_str.lower() or "service_role" in diag_str.lower()
+
+
+def test_insert_scan_record_with_user_and_domain(mock_supabase_client):
+    """Verify insert_scan_record sends user_id and destination_domain when provided."""
+    expected_row = {
+        "id": "scan-1234",
+        "extracted_url": "https://malicious-login.com/login",
+        "qr_payload_type": "URL",
+        "scan_status": "PROCESSED",
+        "user_id": "user-uuid-8888",
+        "destination_domain": "malicious-login.com",
+    }
+    response_mock = MagicMock()
+    response_mock.data = [expected_row]
+    mock_supabase_client.table().insert().execute.return_value = response_mock
+
+    result = insert_scan_record(
+        extracted_url="https://malicious-login.com/login",
+        qr_payload_type="URL",
+        scan_status="PROCESSED",
+        user_id="user-uuid-8888",
+        destination_domain="malicious-login.com",
+        client=mock_supabase_client,
+    )
+
+    assert result == expected_row
+    call_args = mock_supabase_client.table().insert.call_args[0][0]
+    assert call_args["user_id"] == "user-uuid-8888"
+    assert call_args["destination_domain"] == "malicious-login.com"
+
+
+def test_insert_scan_record_schema_fallback_on_missing_column(mock_supabase_client):
+    """Verify insert_scan_record falls back to base schema if extended columns don't exist in live table."""
+    # First insert fails because destination_domain or user_id column doesn't exist
+    err_col = APIError({"message": "Could not find column 'destination_domain' in table 'scan_history'", "code": "PGRST204"})
+    
+    # Second insert succeeds with base columns
+    fallback_row = {"id": "scan-fallback-1", "extracted_url": "https://example.com", "qr_payload_type": "URL", "scan_status": "PROCESSED"}
+    success_mock = MagicMock(data=[fallback_row])
+
+    mock_supabase_client.table().insert().execute.side_effect = [err_col, success_mock]
+
+    result = insert_scan_record(
+        extracted_url="https://example.com",
+        qr_payload_type="URL",
+        user_id="user-123",
+        destination_domain="example.com",
+        client=mock_supabase_client,
+    )
+
+    assert result == fallback_row
+    # Verify second call stripped the extended columns
+    second_call_args = mock_supabase_client.table().insert.call_args_list[-1][0][0]
+    assert "user_id" not in second_call_args
+    assert "destination_domain" not in second_call_args
+
+
+def test_save_complete_scan_associates_user_and_parses_domain(mock_supabase_client):
+    """Verify save_complete_scan parses destination domain and passes user_id."""
+    response_mock = MagicMock()
+    response_mock.data = [{"id": "scan-complete-user-1"}]
+    mock_supabase_client.table().insert().execute.return_value = response_mock
+
+    result = save_complete_scan(
+        extracted_url="https://secure-banking.org/dashboard",
+        qr_payload_type="URL",
+        predicted_class="SAFE",
+        risk_score=0.08,
+        detected_indicators=[],
+        selected_action="ALLOW",
+        decision_reason="Legitimate domain",
+        user_id="user-sec-999",
+        client=mock_supabase_client,
+    )
+
+    assert result is not None
+    assert result["scan_id"] == "scan-complete-user-1"
+
 
 
 

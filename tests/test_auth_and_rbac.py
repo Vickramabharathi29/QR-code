@@ -21,8 +21,10 @@ from modules.auth import (
     authenticate_admin,
     change_admin_password,
     get_admin_email,
+    get_user_profile,
     provision_initial_admin,
     sign_out_admin,
+    update_user_profile,
     validate_password_strength,
     verify_admin_authorization,
 )
@@ -288,3 +290,89 @@ class TestSupabaseAuthAndRBAC:
         )
         assert ok is False
         assert "8 characters" in msg.lower()
+
+    def test_change_admin_password_call_with_app_signature(self):
+        """Test exact keyword signature called in app.py settings screen."""
+        mock_client = MagicMock()
+        mock_auth_resp = MagicMock()
+        mock_auth_resp.user = MagicMock()
+        mock_client.auth.sign_in_with_password.return_value = mock_auth_resp
+        mock_client.auth.admin.update_user_by_id.return_value = MagicMock()
+
+        # Exactly as invoked in app.py render_settings_screen
+        ok, msg = change_admin_password(
+            new_password="Fresh#SecurePassword2026!",
+            current_password="Admin#QRShield2026!",
+            confirm_password="Fresh#SecurePassword2026!",
+            user_id="user-uuid-9999",
+            client=mock_client,
+        )
+        assert ok is True
+        assert "successfully" in msg.lower()
+
+    def test_change_admin_password_network_or_unexpected_failure(self):
+        """Unexpected exception in Supabase Auth returns clean error without leaking raw tracebacks."""
+        mock_client = MagicMock()
+        mock_client.auth.sign_in_with_password.return_value = MagicMock()
+        mock_client.auth.admin.update_user_by_id.side_effect = RuntimeError("Supabase Auth API unavailable")
+
+        ok, msg = change_admin_password(
+            new_password="Fresh#SecurePassword2026!",
+            current_password="Admin#QRShield2026!",
+            confirm_password="Fresh#SecurePassword2026!",
+            user_id="user-uuid-9999",
+            client=mock_client,
+        )
+        assert ok is False
+        assert "failed to update password" in msg.lower() or "unable to update password" in msg.lower()
+        # Verify no python syntax traceback in user message
+        assert "Traceback (most recent call last)" not in msg
+
+    def test_get_user_profile_success(self):
+        """Test retrieving structured profile from auth metadata and public table."""
+        mock_client = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = "user-1234"
+        mock_user.email = "admin@qrshield.io"
+        mock_user.created_at = "2026-01-01T00:00:00Z"
+        mock_user.last_sign_in_at = "2026-10-18T10:00:00Z"
+        mock_user.user_metadata = {"full_name": "Cyber SecOps", "role": "admin"}
+        mock_client.auth.admin.get_user_by_id.return_value = MagicMock(user=mock_user)
+
+        # Mock table return
+        mock_table = MagicMock()
+        mock_table.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value.data = {
+            "id": "user-1234",
+            "full_name": "Cyber SecOps",
+            "role": "admin",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-10-18T10:00:00Z",
+        }
+        mock_client.table.return_value = mock_table
+
+        profile = get_user_profile("user-1234", client=mock_client)
+        assert profile is not None
+        assert profile["id"] == "user-1234"
+        assert profile["full_name"] == "Cyber SecOps"
+        assert profile["role"] == "admin"
+        assert profile["email"] == "admin@qrshield.io"
+        assert profile["account_status"] == "Active"
+
+    def test_update_user_profile_validation_and_execution(self):
+        """Test updating profile full name with validation."""
+        mock_client = MagicMock()
+        # Empty user id rejected
+        ok, msg = update_user_profile("", "New Name", client=mock_client)
+        assert ok is False
+
+        # Empty name rejected
+        ok, msg = update_user_profile("user-1234", "", client=mock_client)
+        assert ok is False
+
+        # Valid update
+        mock_client.auth.admin.update_user_by_id.return_value = MagicMock()
+        mock_client.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[{"id": "user-1234"}])
+        ok, msg = update_user_profile("user-1234", "Security Director", client=mock_client)
+        assert ok is True
+        assert "successfully" in msg.lower()
+
