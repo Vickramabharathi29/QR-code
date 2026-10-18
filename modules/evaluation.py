@@ -78,22 +78,60 @@ def compute_classification_metrics(
 
 
 def plot_confusion_matrix(
-    cm_dict: Dict[str, Any],
+    cm_input: Union[Dict[str, Any], List[List[Union[int, float]]], np.ndarray],
+    labels: Optional[Union[List[str], str]] = None,
     title: str = "Random Forest Confusion Matrix",
 ) -> go.Figure:
     """Generate an interactive Plotly heatmap for the confusion matrix.
 
+    Accepts:
+    - Dictionary with 'tn', 'fp', 'fn', 'tp' or a 'matrix' key
+    - 2x2 nested list or NumPy array
+    - Optional labels list (e.g. ['Benign', 'Malicious']) or title string
+
     Args:
-        cm_dict: Dictionary containing tn, fp, fn, tp or 2x2 matrix.
+        cm_input: Confusion matrix data as dictionary, 2D list, or numpy array.
+        labels: Optional class labels for axes or title string.
         title: Plot title.
 
     Returns:
-        go.Figure: Styled Plotly figure.
+        go.Figure: Styled Plotly heatmap figure.
     """
-    matrix = cm_dict.get("matrix", [[cm_dict.get("tn", 0), cm_dict.get("fp", 0)],
-                                    [cm_dict.get("fn", 0), cm_dict.get("tp", 0)]])
+    if isinstance(labels, str):
+        title = labels
+        labels = None
 
-    labels = ["Benign (0)", "Malicious (1)"]
+    if labels and isinstance(labels, (list, tuple)) and len(labels) >= 2:
+        class_labels = [str(labels[0]), str(labels[1])]
+    else:
+        class_labels = ["Benign (0)", "Malicious (1)"]
+
+    matrix = [[0, 0], [0, 0]]
+    try:
+        if isinstance(cm_input, dict):
+            if "matrix" in cm_input and isinstance(cm_input["matrix"], (list, tuple, np.ndarray)):
+                m = cm_input["matrix"]
+                matrix = [[int(m[0][0]), int(m[0][1])], [int(m[1][0]), int(m[1][1])]]
+            else:
+                tn = int(cm_input.get("tn", 0))
+                fp = int(cm_input.get("fp", 0))
+                fn = int(cm_input.get("fn", 0))
+                tp = int(cm_input.get("tp", 0))
+                matrix = [[tn, fp], [fn, tp]]
+        elif isinstance(cm_input, (list, tuple, np.ndarray)):
+            arr = np.array(cm_input)
+            if arr.shape == (2, 2):
+                matrix = [[int(arr[0, 0]), int(arr[0, 1])], [int(arr[1, 0]), int(arr[1, 1])]]
+            elif arr.size >= 4:
+                flat = arr.flatten()
+                matrix = [[int(flat[0]), int(flat[1])], [int(flat[2]), int(flat[3])]]
+            else:
+                return _create_empty_figure(title, "Invalid confusion matrix dimensions.")
+        else:
+            return _create_empty_figure(title, "Malformed confusion matrix input.")
+    except Exception as exc:
+        return _create_empty_figure(title, f"Could not render confusion matrix: {exc}")
+
     z_values = [[matrix[0][0], matrix[0][1]], [matrix[1][0], matrix[1][1]]]
 
     annotations = []
@@ -106,8 +144,8 @@ def plot_confusion_matrix(
         for j in range(2):
             annotations.append(
                 dict(
-                    x=labels[j],
-                    y=labels[i],
+                    x=class_labels[j],
+                    y=class_labels[i],
                     text=cell_descriptions[i][j],
                     showarrow=False,
                     font=dict(color="white", size=13),
@@ -117,8 +155,8 @@ def plot_confusion_matrix(
     fig = go.Figure(
         data=go.Heatmap(
             z=z_values,
-            x=labels,
-            y=labels,
+            x=class_labels,
+            y=class_labels,
             colorscale=[[0, "#0f172a"], [0.5, "#1e3a8a"], [1, "#0284c7"]],
             showscale=True,
         )

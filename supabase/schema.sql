@@ -84,6 +84,24 @@ CREATE INDEX IF NOT EXISTS idx_rl_feedback_scan_id
 CREATE INDEX IF NOT EXISTS idx_rl_feedback_created_at 
     ON public.rl_feedback(created_at DESC);
 
+-- -----------------------------------------------------------------------------
+-- Table 5: user_roles
+-- Stores RBAC role assignments linked to auth.users for SecOps administration
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.user_roles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user', 'analyst')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT uq_user_roles_user_id UNIQUE (user_id),
+    CONSTRAINT uq_user_roles_email UNIQUE (email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON public.user_roles(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_roles_email ON public.user_roles(email);
+
 -- =============================================================================
 -- Row Level Security (RLS) Configuration
 -- =============================================================================
@@ -93,23 +111,42 @@ ALTER TABLE public.scan_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.threat_analysis ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.prevention_decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.rl_feedback ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
 
--- Note on Security Design:
--- 1. By default, enabling RLS without public policies prevents unrestricted public
---    read or write access from untrusted clients (Deny-All policy for anon).
--- 2. Trusted server-side operations using the Supabase service_role key inherently
---    bypass RLS for secure backend execution.
--- 3. If connecting via the anon key or user JWTs, access must be explicitly granted.
---    Below are sample policies for future multi-user authentication integration:
---
--- EXAMPLE MULTI-USER POLICY (For future implementation when adding auth):
---   ALTER TABLE public.scan_history ADD COLUMN user_id UUID REFERENCES auth.users(id);
---   CREATE POLICY "Users can only read their own scans" 
---       ON public.scan_history FOR SELECT 
---       TO authenticated 
---       USING (auth.uid() = user_id);
---
---   CREATE POLICY "Users can only insert their own scans" 
---       ON public.scan_history FOR INSERT 
---       TO authenticated 
---       WITH CHECK (auth.uid() = user_id);
+-- user_roles policies: Users can only read their own role. Only service_role can write.
+CREATE POLICY "Users can read own role" 
+    ON public.user_roles FOR SELECT 
+    TO authenticated 
+    USING (auth.uid() = user_id);
+
+CREATE POLICY "Service role manages user roles" 
+    ON public.user_roles FOR ALL 
+    TO service_role 
+    USING (true) 
+    WITH CHECK (true);
+
+-- Scan telemetry policies: Service role has full access; anon users cannot view global history.
+CREATE POLICY "Allow service role full access to scan_history" 
+    ON public.scan_history FOR ALL 
+    TO service_role 
+    USING (true) 
+    WITH CHECK (true);
+
+CREATE POLICY "Allow service role full access to threat_analysis" 
+    ON public.threat_analysis FOR ALL 
+    TO service_role 
+    USING (true) 
+    WITH CHECK (true);
+
+CREATE POLICY "Allow service role full access to prevention_decisions" 
+    ON public.prevention_decisions FOR ALL 
+    TO service_role 
+    USING (true) 
+    WITH CHECK (true);
+
+CREATE POLICY "Allow service role full access to rl_feedback" 
+    ON public.rl_feedback FOR ALL 
+    TO service_role 
+    USING (true) 
+    WITH CHECK (true);
+

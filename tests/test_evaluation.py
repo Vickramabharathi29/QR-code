@@ -41,11 +41,23 @@ def test_compute_classification_metrics():
 
 
 def test_plot_confusion_matrix():
+    # 1. Called with dict
     cm_dict = {"tn": 15, "fp": 0, "fn": 0, "tp": 15, "matrix": [[15, 0], [0, 15]]}
     fig = plot_confusion_matrix(cm_dict)
     assert isinstance(fig, go.Figure)
     assert len(fig.data) == 1
     assert fig.data[0].type == "heatmap"
+
+    # 2. Called with 2x2 array and labels keyword argument (the exact app.py bug location)
+    cm_array = [[15, 0], [0, 15]]
+    fig2 = plot_confusion_matrix(cm_array, labels=["Benign", "Malicious"])
+    assert isinstance(fig2, go.Figure)
+    assert len(fig2.data) == 1
+    assert list(fig2.data[0].x) == ["Benign", "Malicious"]
+
+    # 3. Called with malformed input - handles gracefully without crashing
+    fig3 = plot_confusion_matrix("invalid_data")
+    assert isinstance(fig3, go.Figure)
 
 
 def test_plot_feature_importance():

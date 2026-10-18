@@ -22,6 +22,10 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "https://tjfhuulhzvlkqvjkevki.supabase.
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
+# Administrator Authentication Configuration
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "Vickramabharathi@gmail.com")
+ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "Admin#QRShield2026!")
+
 
 # Application Environment
 APP_ENV = os.getenv("APP_ENV", "development")

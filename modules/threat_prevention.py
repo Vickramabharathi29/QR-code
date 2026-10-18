@@ -13,6 +13,7 @@ Safety Constraints:
 from dataclasses import asdict, dataclass
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 import config
 from modules.reinforcement_learning import (
@@ -39,6 +40,7 @@ class SafetyConstraintsConfig:
     prevent_allow_on_high_risk: bool = True
     prevent_allow_on_malicious_ml: bool = True
     prevent_allow_on_uncertain_medium: bool = True
+    prevent_allow_on_unavailable_model: bool = True
     high_risk_threshold: float = 70.0
     medium_risk_threshold: float = 30.0
 
@@ -59,9 +61,28 @@ class PreventionDecision:
     predicted_class: str
     heuristic_category: str
 
+    @property
+    def is_permitted(self) -> bool:
+        """True if and only if final policy decision is ALLOW."""
+        return self.final_action == "ALLOW"
+
+    @property
+    def is_blocked(self) -> bool:
+        """True if final policy decision is BLOCK."""
+        return self.final_action == "BLOCK"
+
+    @property
+    def is_uncertain(self) -> bool:
+        """True if final policy decision is WARN."""
+        return self.final_action == "WARN"
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert decision to serializable dictionary."""
-        return asdict(self)
+        d = asdict(self)
+        d["is_permitted"] = self.is_permitted
+        d["is_blocked"] = self.is_blocked
+        d["is_uncertain"] = self.is_uncertain
+        return d
 
 
 class ThreatPreventionEngine:
@@ -186,27 +207,32 @@ class ThreatPreventionEngine:
         override_reason = None
         safety_rule = None
 
-        if raw_action == "ALLOW":
-            # Safety Rule A: If ML predicted Malicious, never ALLOW
-            if self.safety_config.prevent_allow_on_malicious_ml and rf_pred == "Malicious":
-                final_action = "BLOCK"
-                is_override = True
-                override_reason = "Safety Override: Q-Learning suggested ALLOW, but Random Forest identified URL as Malicious."
-                safety_rule = "SAFETY_OVERRIDE_MALICIOUS_ML"
+        # Mandatory Rule A: Malicious ML classification must ALWAYS be BLOCKED (RL cannot override)
+        if self.safety_config.prevent_allow_on_malicious_ml and rf_pred == "Malicious" and final_action != "BLOCK":
+            final_action = "BLOCK"
+            is_override = True
+            override_reason = "Mandatory Security Constraint: Classifier identified URL as Malicious; unconditionally BLOCKED."
+            safety_rule = "SAFETY_OVERRIDE_MALICIOUS_ML"
 
-            # Safety Rule B: If High Risk score or High Heuristic threat, never ALLOW
-            elif self.safety_config.prevent_allow_on_high_risk and (rf_risk >= self.safety_config.high_risk_threshold or heur_cat == "HIGH"):
-                final_action = "BLOCK"
-                is_override = True
-                override_reason = f"Safety Override: High threat score ({rf_risk:.1f}/100) or heuristic HIGH mandates BLOCK."
-                safety_rule = "SAFETY_OVERRIDE_HIGH_THREAT"
+        # Mandatory Rule B: High risk score or High Heuristic threat must ALWAYS be BLOCKED
+        elif self.safety_config.prevent_allow_on_high_risk and (rf_risk >= self.safety_config.high_risk_threshold or heur_cat == "HIGH") and final_action != "BLOCK":
+            final_action = "BLOCK"
+            is_override = True
+            override_reason = f"Mandatory Security Constraint: High threat score ({rf_risk:.1f}/100) or heuristic HIGH mandates BLOCK."
+            safety_rule = "SAFETY_OVERRIDE_HIGH_THREAT"
 
-            # Safety Rule C: If uncertain with medium heuristic risk, downgrade to WARN
-            elif self.safety_config.prevent_allow_on_uncertain_medium and "UNCERTAIN" in state_key and heur_cat == "MEDIUM":
+        # Conservative Rule C: When unconstrained action is ALLOW, enforce conservative fallbacks
+        elif final_action == "ALLOW":
+            if self.safety_config.prevent_allow_on_uncertain_medium and "UNCERTAIN" in state_key and heur_cat == "MEDIUM":
                 final_action = "WARN"
                 is_override = True
                 override_reason = "Safety Prudence: Downgraded ALLOW to WARN due to model uncertainty and medium heuristic risk."
                 safety_rule = "SAFETY_PRUDENCE_UNCERTAIN"
+            elif self.safety_config.prevent_allow_on_unavailable_model and not is_model_available:
+                final_action = "WARN"
+                is_override = True
+                override_reason = "Safety Prudence: Required ML analysis is unavailable; downgraded ALLOW to WARN following conservative security policy."
+                safety_rule = "SAFETY_PRUDENCE_MODEL_UNAVAILABLE"
 
         # 6. Formulate Decision Explanation
         explanation_parts = []
@@ -244,6 +270,141 @@ class ThreatPreventionEngine:
             predicted_class=rf_pred,
             heuristic_category=heur_cat,
         )
+
+    def evaluate_navigation_decision(
+        self,
+        raw_payload: str,
+        payload_type: str,
+        analysis_result: URLAnalysisResult,
+        ml_prediction: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Centralized navigation safety decision for QR destination opening.
+
+        Enforces mandatory security constraints:
+        - Invalid or unsupported URLs must never be opened.
+        - URLs classified as malicious must be blocked.
+        - High-risk URLs must not be allowed solely because Q-Learning recommends ALLOW.
+        - A low-risk prediction is not a guarantee of safety.
+        - Q-Learning must never override a mandatory BLOCK decision.
+        - Only HTTP and HTTPS URLs can be permitted destinations.
+        - Legitimate Google Forms URLs are supported when verified clean, but are never hardcoded.
+
+        Args:
+            raw_payload: Decoded raw content from QR code.
+            payload_type: QR payload classification string.
+            analysis_result: Heuristic & lexical URL analysis.
+            ml_prediction: Optional Random Forest classifier prediction.
+
+        Returns:
+            Dict[str, Any]: Centralized navigation verdict.
+        """
+        decision = self.evaluate_threat(
+            raw_payload=raw_payload,
+            payload_type=payload_type,
+            analysis_result=analysis_result,
+            ml_prediction=ml_prediction,
+        )
+
+        clean_payload = (raw_payload or "").strip()
+        try:
+            parsed = urlparse(clean_payload)
+            scheme = (parsed.scheme or "").lower()
+            hostname = (parsed.hostname or "").lower()
+            path = parsed.path or ""
+        except Exception:
+            scheme = ""
+            hostname = ""
+            path = ""
+
+        is_web_url = scheme in ("https", "http") and bool(hostname)
+        is_google_form = is_web_url and (
+            "forms.gle" in hostname or ("docs.google.com" in hostname and "/forms" in path.lower())
+        )
+
+        # Retrieve risk indicators
+        indicators = list(getattr(analysis_result, "risk_indicators", []))
+        if hasattr(analysis_result, "suspicious_indicators"):
+            for ind in analysis_result.suspicious_indicators:
+                if ind not in indicators:
+                    indicators.append(ind)
+
+        # CASE A / D1: Malicious, Blocked, Dangerous Scheme, or Malformed Destination
+        if (
+            decision.final_action == "BLOCK"
+            or payload_type == "DANGEROUS_SCHEME"
+            or "MALFORMED" in getattr(analysis_result, "status", "")
+            or (payload_type in ["URL_HTTPS", "URL_HTTP"] and not getattr(analysis_result, "is_valid_url", True))
+        ):
+            return {
+                "decision": decision,
+                "is_permitted": False,
+                "open_url": None,
+                "button_label": None,
+                "status_category": "BLOCKED",
+                "status_badge_color": "#ef4444",
+                "display_title": "🚨 Potentially Malicious QR Code Blocked",
+                "display_message": (
+                    "Opening this destination has been strictly disabled to protect your device from "
+                    "phishing, credential theft, or malicious redirection."
+                ),
+                "detected_indicators": indicators or [decision.explanation],
+                "is_google_form": is_google_form,
+                "disclaimer": "Static URL analysis cannot guarantee detection of every malicious destination. High-risk signals mandated an unconditional block.",
+            }
+
+        # CASE D2: Plain Text Payload (Not a web destination)
+        if payload_type == "PLAIN_TEXT" or not is_web_url:
+            return {
+                "decision": decision,
+                "is_permitted": False,
+                "open_url": None,
+                "button_label": None,
+                "status_category": "INFO",
+                "status_badge_color": "#38bdf8",
+                "display_title": "📄 Plain Text / Non-Web Payload",
+                "display_message": "The decoded content is plain text or an offline format, not an approved web destination.",
+                "detected_indicators": [],
+                "is_google_form": False,
+                "disclaimer": "This QR code contains static text and cannot be launched as a web destination.",
+            }
+
+        # CASE C: Suspicious or Uncertain
+        if decision.final_action == "WARN":
+            return {
+                "decision": decision,
+                "is_permitted": False,
+                "open_url": None,
+                "button_label": None,
+                "status_category": "UNCERTAIN",
+                "status_badge_color": "#f59e0b",
+                "display_title": "⚠️ Unverified Destination: Safety Cannot Be Confidently Verified",
+                "display_message": (
+                    "This URL contains ambiguous security indicators, elevated risk, or required analysis is unavailable. "
+                    "Automatic opening is disabled; returning to scanning is advised."
+                ),
+                "detected_indicators": indicators,
+                "is_google_form": is_google_form,
+                "disclaimer": "Static URL analysis cannot guarantee detection of every malicious destination. Conservative security policy enforced.",
+            }
+
+        # CASE B: Permitted Web Destination (Low Risk & Verified ALLOW)
+        button_text = "🌐 Open Google Form" if is_google_form else "🌐 Open Website"
+        return {
+            "decision": decision,
+            "is_permitted": True,
+            "open_url": clean_payload,
+            "button_label": button_text,
+            "status_category": "PERMITTED",
+            "status_badge_color": "#10b981",
+            "display_title": "🛡️ Permitted Destination (Verified Safe)",
+            "display_message": (
+                "Combined risk assessment, feature analysis, and heuristic checks support safe navigation. "
+                f"Click '{button_text}' below to open the destination in a new browser tab."
+            ),
+            "detected_indicators": [],
+            "is_google_form": is_google_form,
+            "disclaimer": "A low-risk classification does not guarantee the destination is 100% safe. Always verify credentials before submitting sensitive data.",
+        }
 
     def benchmark_policies(
         self,

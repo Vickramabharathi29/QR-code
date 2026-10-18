@@ -27,6 +27,9 @@ if not logger.handlers:
 
 _client_instance: Optional[Client] = None
 _client_role: Optional[str] = None
+_cached_url: Optional[str] = None
+_cached_pub_key: Optional[str] = None
+_cached_srv_key: Optional[str] = None
 _last_db_error: Optional[Dict[str, Any]] = None
 
 
@@ -236,7 +239,7 @@ def get_supabase_client(
     Returns:
         Optional[Client]: The connected Supabase client, or None if credentials are missing or inadequate.
     """
-    global _client_instance, _client_role
+    global _client_instance, _client_role, _cached_url, _cached_pub_key, _cached_srv_key
 
     # If key is provided explicitly
     if supabase_key is not None:
@@ -254,16 +257,23 @@ def get_supabase_client(
             logger.error(f"Failed to initialize Supabase client with custom key: {exc}")
             return None
 
-    # Check cached singleton if applicable
-    if _client_instance is not None and not force_new and supabase_url is None:
+    url = (supabase_url or config.SUPABASE_URL or "").strip()
+    srv_key = getattr(config, "SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    pub_key = (config.SUPABASE_KEY or "").strip()
+
+    # Check cached singleton if credentials haven't changed
+    if (
+        _client_instance is not None
+        and not force_new
+        and supabase_url is None
+        and url == _cached_url
+        and pub_key == _cached_pub_key
+        and srv_key == _cached_srv_key
+    ):
         if require_service_role and _client_role == "anon":
             pass
         else:
             return _client_instance
-
-    url = (supabase_url or config.SUPABASE_URL).strip()
-    srv_key = getattr(config, "SUPABASE_SERVICE_ROLE_KEY", "").strip()
-    pub_key = (config.SUPABASE_KEY or "").strip()
 
     chosen_key = None
     chosen_role = "unknown"
@@ -310,6 +320,9 @@ def get_supabase_client(
         if not force_new and supabase_url is None:
             _client_instance = client
             _client_role = chosen_role
+            _cached_url = url
+            _cached_pub_key = pub_key
+            _cached_srv_key = srv_key
         return client
     except Exception as exc:
         logger.error(f"Failed to initialize Supabase client: {exc}", exc_info=True)
@@ -400,9 +413,20 @@ def insert_scan_record(
         return None
 
 
-    valid_payload_types = {"URL", "TEXT", "WIFI", "VCARD", "OTHER"}
-    if qr_payload_type not in valid_payload_types:
-        qr_payload_type = "OTHER"
+    raw_type_str = str(qr_payload_type or "").upper().strip()
+    if raw_type_str in {"URL", "TEXT", "WIFI", "VCARD", "OTHER"}:
+        clean_type = raw_type_str
+    elif raw_type_str.startswith("URL"):
+        clean_type = "URL"
+    elif "TEXT" in raw_type_str:
+        clean_type = "TEXT"
+    elif "WIFI" in raw_type_str:
+        clean_type = "WIFI"
+    elif "VCARD" in raw_type_str:
+        clean_type = "VCARD"
+    else:
+        clean_type = "OTHER"
+    qr_payload_type = clean_type
 
     valid_statuses = {"PENDING", "PROCESSED", "FAILED"}
     if scan_status not in valid_statuses:
@@ -794,16 +818,22 @@ def save_complete_scan(
 def get_detailed_scan_history(
     limit: int = 50,
     client: Optional[Client] = None,
+    is_admin: bool = True,
 ) -> List[Dict[str, Any]]:
     """Retrieve scan history joined with threat analysis and prevention decision details.
 
     Args:
         limit: Maximum number of scan records to retrieve.
         client: Optional Supabase client.
+        is_admin: Boolean indicating whether caller is an authorized administrator.
 
     Returns:
         List[Dict[str, Any]]: Flattened records suitable for table display and CSV export.
     """
+    if not is_admin:
+        logger.warning("Unauthorized access to global scan history rejected.")
+        return []
+
     active_client = client or get_supabase_client()
     if active_client is None:
         logger.warning("Cannot retrieve detailed scans: Supabase is not configured.")
@@ -877,15 +907,19 @@ def get_detailed_scan_history(
             return []
 
 
-def export_scan_history_to_csv(scans: List[Dict[str, Any]]) -> str:
+def export_scan_history_to_csv(scans: List[Dict[str, Any]], is_admin: bool = True) -> str:
     """Format scan history records into a clean RFC-4180 CSV string.
 
     Args:
         scans: List of scan dictionaries.
+        is_admin: Authorization check flag.
 
     Returns:
         str: CSV formatted string ready for file download.
     """
+    if not is_admin:
+        raise PermissionError("Exporting scan history audit log requires administrator authorization.")
+
     import csv
     import io
 
