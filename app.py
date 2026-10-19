@@ -66,6 +66,10 @@ from modules.threat_prevention import (
 )
 from modules.url_analyzer import URLAnalysisResult, analyze_url
 
+# Synchronize Streamlit Cloud secrets with local environment
+if hasattr(config, "sync_secrets_to_env"):
+    config.sync_secrets_to_env()
+
 # Configuration parameters
 MAX_UPLOAD_SIZE_MB = getattr(config, "MAX_UPLOAD_SIZE_MB", 5.0)
 
@@ -137,6 +141,7 @@ def reset_scan() -> None:
     st.session_state["uploader_key"] += 1
     st.session_state["last_uploaded_filename"] = None
     st.session_state["db_save_status"] = None
+    st.session_state["persisted_scan_events"] = set()
     st.rerun()
 
 
@@ -1340,47 +1345,54 @@ def render_scan_qr_screen() -> None:
                         if "persisted_scan_events" not in st.session_state:
                             st.session_state["persisted_scan_events"] = set()
 
-                        new_scan_id = str(uuid.uuid4())
-                        try:
-                            saved_rec = database.save_complete_scan(
-                                extracted_url=first_item.raw_payload,
-                                qr_payload_type=first_item.payload_type,
-                                predicted_class=pred_label,
-                                risk_score=min(1.0, max(0.0, decision_obj.risk_score / 100.0)),
-                                detected_indicators=nav_dec.get("detected_indicators", []),
-                                selected_action=final_action,
-                                decision_reason=decision_obj.explanation,
-                                scan_id=new_scan_id,
-                                user_id=auth_uid,
-                                user_email=auth_email,
-                                user_name=auth_name,
-                                state_label=state_key,
-                                reward=reward_val,
-                                feedback_source="ADMIN" if is_admin_authenticated() else "USER",
-                                raw_action=raw_action,
-                            )
-                            if saved_rec and isinstance(saved_rec, dict) and saved_rec.get("scan_id"):
-                                st.session_state["persisted_scan_events"].add(new_scan_id)
-                                st.session_state["db_save_status"] = {
-                                    "success": True,
-                                    "scan_id": saved_rec["scan_id"],
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                                    "has_rl": saved_rec.get("rl_record") is not None,
-                                }
-                                clear_scan_cache()
-                            else:
-                                err = database.get_last_error()
-                                err_msg = err.get("message") if err else "Database write returned no data."
+                        # Deduplicate: Create idempotent signature for current scan payload and image
+                        scan_hash = hashlib.sha256(f"{first_item.raw_payload}:{len(file_bytes)}".encode("utf-8")).hexdigest()[:16]
+                        if scan_hash in st.session_state["persisted_scan_events"]:
+                            # Already persisted during this upload cycle
+                            pass
+                        else:
+                            new_scan_id = str(uuid.uuid4())
+                            try:
+                                saved_rec = database.save_complete_scan(
+                                    extracted_url=first_item.raw_payload,
+                                    qr_payload_type=first_item.payload_type,
+                                    predicted_class=pred_label,
+                                    risk_score=min(1.0, max(0.0, decision_obj.risk_score / 100.0)),
+                                    detected_indicators=nav_dec.get("detected_indicators", []),
+                                    selected_action=final_action,
+                                    decision_reason=decision_obj.explanation,
+                                    scan_id=new_scan_id,
+                                    user_id=auth_uid,
+                                    user_email=auth_email,
+                                    user_name=auth_name,
+                                    state_label=state_key,
+                                    reward=reward_val,
+                                    feedback_source="ADMIN" if is_admin_authenticated() else "USER",
+                                    raw_action=raw_action,
+                                )
+                                if saved_rec and isinstance(saved_rec, dict) and saved_rec.get("scan_id"):
+                                    st.session_state["persisted_scan_events"].add(scan_hash)
+                                    st.session_state["persisted_scan_events"].add(new_scan_id)
+                                    st.session_state["db_save_status"] = {
+                                        "success": True,
+                                        "scan_id": saved_rec["scan_id"],
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                        "has_rl": saved_rec.get("rl_record") is not None,
+                                    }
+                                    clear_scan_cache()
+                                else:
+                                    err = database.get_last_error()
+                                    err_msg = err.get("message") if err else "Database write returned no data."
+                                    st.session_state["db_save_status"] = {
+                                        "success": False,
+                                        "error": err_msg,
+                                    }
+                            except Exception as save_err:
+                                logger.error("Scan persistence exception: %s", save_err)
                                 st.session_state["db_save_status"] = {
                                     "success": False,
-                                    "error": err_msg,
+                                    "error": str(save_err),
                                 }
-                        except Exception as save_err:
-                            logger.error("Scan persistence exception: %s", save_err)
-                            st.session_state["db_save_status"] = {
-                                "success": False,
-                                "error": str(save_err),
-                            }
                     st.rerun()
 
     with scan_right:
@@ -2440,9 +2452,30 @@ def render_settings_screen() -> None:
     with s2:
         # Live Database Diagnostics Panel
         diag = run_database_diagnostics()
-        conn_badge = '<span style="color: #34d399; font-weight: 600;">Verified Connected ✓</span>' if diag.get("connection_verified") else '<span style="color: #f87171; font-weight: 600;">Connection Failed ✕</span>'
+        if diag.get("connection_verified"):
+            conn_badge = '<span style="color: #34d399; font-weight: 600;">Verified Connected ✓</span>'
+        elif diag.get("connection_status") == "MISSING_CREDENTIALS":
+            conn_badge = '<span style="color: #f59e0b; font-weight: 600;">Missing Secrets ⚠️</span>'
+        elif diag.get("connection_status") == "AUTH_FAILED":
+            conn_badge = '<span style="color: #f87171; font-weight: 600;">Auth Failed ✕</span>'
+        elif diag.get("connection_status") == "RLS_RESTRICTED":
+            conn_badge = '<span style="color: #f87171; font-weight: 600;">RLS Restricted ✕</span>'
+        else:
+            conn_badge = '<span style="color: #f87171; font-weight: 600;">Connection Failed ✕</span>'
+
         role_badge = '<span style="color: #38bdf8; font-weight: 600;">Service-Role Verified ✓</span>' if diag.get("is_service_role") else '<span style="color: #f59e0b; font-weight: 600;">Anon Mode</span>'
-        write_badge = '<span style="color: #34d399; font-weight: 600;">Permitted ✓</span>' if diag.get("write_verified") else '<span style="color: #f87171; font-weight: 600;">Write Restricted</span>'
+
+        if diag.get("write_verified"):
+            write_badge = '<span style="color: #34d399; font-weight: 600;">Permitted ✓</span>'
+        elif diag.get("write_status") == "RLS_RESTRICTED":
+            write_badge = '<span style="color: #f87171; font-weight: 600;">Write Restricted (RLS)</span>'
+        elif diag.get("write_status") == "MISSING_CREDENTIALS":
+            write_badge = '<span style="color: #f59e0b; font-weight: 600;">Secrets Required</span>'
+        else:
+            write_badge = '<span style="color: #f87171; font-weight: 600;">Write Restricted</span>'
+
+        diag_status_msg = diag.get("write_message") or diag.get("connection_message") or "Supabase connection verified."
+        diag_status_color = "#34d399" if (diag.get("connection_verified") and diag.get("write_verified")) else "#f59e0b"
 
         st.markdown(
             f"""
@@ -2468,15 +2501,42 @@ def render_settings_screen() -> None:
                         <span style="color: #94a3b8;">Auth Users Active:</span>
                         <span style="color: #cbd5e1;">{diag.get('user_count', 'Verified')} accounts</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between;">
+                    <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #1e293b;">
                         <span style="color: #94a3b8;">Tables Verified:</span>
                         <span style="color: #38bdf8;">scan_history, threat_analysis, user_roles</span>
+                    </div>
+                    <div style="margin-top: 0.6rem; padding-top: 0.6rem; font-size: 0.78rem;">
+                        <span style="color: #94a3b8;">Diagnostic Note:</span>
+                        <span style="color: {diag_status_color}; margin-left: 0.3rem;">{diag_status_msg}</span>
                     </div>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        if not diag.get("connection_verified") or not diag.get("is_service_role"):
+            st.markdown(
+                """
+                <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 0.9rem; margin-top: 1rem; margin-bottom: 1rem;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem;">
+                        <span style="color: #f59e0b; font-size: 1rem;">⚠️</span>
+                        <strong style="color: #f8fafc; font-size: 0.88rem;">Streamlit Cloud Deployment Configuration</strong>
+                    </div>
+                    <div style="color: #cbd5e1; font-size: 0.8rem; line-height: 1.5;">
+                        To enable live persistence on <code>qrshield-threatlab.streamlit.app</code>, configure your secrets in Streamlit Cloud Dashboard (<strong>Settings → Secrets</strong>):
+                        <pre style="background: #0f172a; padding: 0.5rem; border-radius: 4px; margin-top: 0.4rem; color: #38bdf8;">
+SUPABASE_URL = "https://your-project.supabase.co"
+SUPABASE_KEY = "your-service-role-key"
+SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
+ADMIN_EMAIL = "your-admin-email@example.com"
+ADMIN_INITIAL_PASSWORD = "your-admin-password"
+                        </pre>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         st.markdown(
             """

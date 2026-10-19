@@ -457,7 +457,7 @@ def get_user_profile(
         "user_id": user_id,
         "email": "",
         "full_name": "SecOps User",
-        "role": "admin",
+        "role": "user",
         "account_status": "Active",
         "created_at": None,
         "last_sign_in_at": None,
@@ -487,10 +487,15 @@ def get_user_profile(
             profile_data["last_sign_in_at"] = l_at.isoformat() if hasattr(l_at, "isoformat") else str(l_at or "")
 
             u_meta = getattr(found_u, "user_metadata", {}) or {}
+            a_meta = getattr(found_u, "app_metadata", {}) or {}
             if u_meta.get("full_name"):
                 profile_data["full_name"] = u_meta["full_name"]
             if u_meta.get("role"):
                 profile_data["role"] = u_meta["role"]
+            elif a_meta.get("role"):
+                profile_data["role"] = a_meta["role"]
+            elif str(profile_data["email"]).strip().lower() == get_admin_email():
+                profile_data["role"] = "admin"
     except Exception as auth_err:
         logger.debug("Auth user list query note: %s", auth_err)
 
