@@ -4,6 +4,7 @@ Adaptive Threat Prevention Using Reinforcement Learning & Machine Learning.
 Professional SecOps Cybersecurity Web Application & Operations Center.
 """
 
+import base64
 import hashlib
 import io
 import json
@@ -160,14 +161,99 @@ def handle_logout() -> None:
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
-    /* Global Theme */
+    /* Global Theme & Cyber Mesh Background */
     .stApp {
-        background-color: #080e1a;
+        background-color: #070d18;
+        background-image: 
+            radial-gradient(circle at 50% 0%, rgba(0, 242, 254, 0.07) 0%, transparent 55%),
+            radial-gradient(circle at 85% 30%, rgba(56, 189, 248, 0.04) 0%, transparent 45%),
+            radial-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px);
+        background-size: 100% 100%, 100% 100%, 28px 28px;
         color: #e2e8f0;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         overflow-x: hidden;
+    }
+
+    /* Staggered Entrance Animations */
+    .animate-fade-in-up {
+        animation: cyberFadeInUp 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    .stagger-1 { animation-delay: 0.05s; }
+    .stagger-2 { animation-delay: 0.12s; }
+    .stagger-3 { animation-delay: 0.20s; }
+    .stagger-4 { animation-delay: 0.28s; }
+
+    @keyframes cyberFadeInUp {
+        from {
+            opacity: 0;
+            transform: translateY(18px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    /* Glowing QRShield Logo & Particles */
+    .cyber-shield-container {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 92px;
+        height: 92px;
+        margin: 0 auto 1.25rem auto;
+    }
+    .cyber-shield-halo {
+        position: absolute;
+        width: 82px;
+        height: 82px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(0, 242, 254, 0.4) 0%, rgba(56, 189, 248, 0.12) 50%, transparent 70%);
+        animation: shieldHaloPulse 3.5s ease-in-out infinite alternate;
+        pointer-events: none;
+    }
+    .cyber-shield-svg {
+        position: relative;
+        z-index: 2;
+        filter: drop-shadow(0 0 16px rgba(0, 242, 254, 0.6)) drop-shadow(0 0 32px rgba(6, 182, 212, 0.3));
+        animation: shieldFloat 4.5s ease-in-out infinite;
+    }
+    @keyframes shieldHaloPulse {
+        0% { transform: scale(0.9); opacity: 0.45; }
+        100% { transform: scale(1.35); opacity: 0.95; filter: drop-shadow(0 0 24px #00f2fe); }
+    }
+    @keyframes shieldFloat {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-6px); }
+    }
+
+    /* Floating Ambient Particles */
+    .cyber-particles-field {
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 380px;
+        overflow: hidden;
+        pointer-events: none;
+        z-index: 0;
+    }
+    .cyber-particle {
+        position: absolute;
+        border-radius: 50%;
+        background: #00f2fe;
+        opacity: 0.3;
+        box-shadow: 0 0 8px #00f2fe;
+    }
+    .p-node-1 { width: 4px; height: 4px; top: 18%; left: 14%; animation: particleDrift 14s ease-in-out infinite; }
+    .p-node-2 { width: 5px; height: 5px; top: 38%; right: 15%; animation: particleDrift 18s ease-in-out infinite 2s; }
+    .p-node-3 { width: 3px; height: 3px; top: 68%; left: 22%; animation: particleDrift 16s ease-in-out infinite 4s; }
+    .p-node-4 { width: 4px; height: 4px; top: 22%; right: 28%; animation: particleDrift 20s ease-in-out infinite 1s; }
+    .p-node-5 { width: 3px; height: 3px; top: 80%; right: 24%; animation: particleDrift 15s ease-in-out infinite 3s; }
+    @keyframes particleDrift {
+        0%, 100% { transform: translate(0, 0); opacity: 0.2; }
+        50% { transform: translate(14px, -20px); opacity: 0.75; }
     }
 
     /* Top Command Header Bar */
@@ -175,13 +261,15 @@ st.markdown(
         display: flex;
         align-items: center;
         justify-content: space-between;
-        background-color: #0b1426;
-        border: 1px solid rgba(56, 189, 248, 0.15);
+        background: linear-gradient(180deg, rgba(14, 25, 46, 0.9) 0%, rgba(9, 17, 34, 0.95) 100%);
+        border: 1px solid rgba(56, 189, 248, 0.2);
         border-radius: 12px;
-        padding: 0.6rem 1.2rem;
-        margin-bottom: 1.2rem;
+        padding: 0.65rem 1.25rem;
+        margin-bottom: 1.25rem;
         gap: 1rem;
         flex-wrap: wrap;
+        backdrop-filter: blur(12px);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
     }
     .secops-top-left {
         display: flex;
@@ -189,35 +277,42 @@ st.markdown(
         gap: 0.8rem;
     }
     .workspace-pill {
-        background: rgba(56, 189, 248, 0.12);
+        background: rgba(56, 189, 248, 0.1);
         color: #38bdf8;
         border: 1px solid rgba(56, 189, 248, 0.3);
         border-radius: 6px;
         padding: 0.25rem 0.65rem;
         font-size: 0.75rem;
         font-weight: 600;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.6px;
+        font-family: 'JetBrains Mono', monospace;
     }
     .status-chip {
         display: inline-flex;
         align-items: center;
-        gap: 0.4rem;
+        gap: 0.45rem;
         padding: 0.3rem 0.75rem;
         border-radius: 20px;
         font-size: 0.78rem;
         font-weight: 500;
+        transition: all 0.2s ease;
     }
     .status-chip-green {
         background: rgba(16, 185, 129, 0.1);
         color: #34d399;
-        border: 1px solid rgba(16, 185, 129, 0.3);
+        border: 1px solid rgba(16, 185, 129, 0.35);
+        box-shadow: 0 0 12px rgba(16, 185, 129, 0.1);
     }
     .status-chip-blue {
         background: rgba(56, 189, 248, 0.1);
         color: #38bdf8;
-        border: 1px solid rgba(56, 189, 248, 0.3);
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        box-shadow: 0 0 12px rgba(56, 189, 248, 0.1);
     }
+
+    /* Dual-Ring Pulsing Status Indicator */
     .pulse-dot {
+        position: relative;
         width: 8px;
         height: 8px;
         border-radius: 50%;
@@ -225,58 +320,91 @@ st.markdown(
         box-shadow: 0 0 8px #34d399;
         display: inline-block;
     }
+    .pulse-dot::before {
+        content: "";
+        position: absolute;
+        top: -4px; left: -4px; right: -4px; bottom: -4px;
+        border-radius: 50%;
+        background: rgba(52, 211, 153, 0.45);
+        animation: ripplePulse 2.2s cubic-bezier(0, 0, 0.2, 1) infinite;
+    }
+    @keyframes ripplePulse {
+        0% { transform: scale(0.8); opacity: 1; }
+        100% { transform: scale(2.6); opacity: 0; }
+    }
 
-    /* Metric Cards */
+    /* Metric Cards with 3D Hover & Neon Accent Stripes */
     .secops-metric-card {
-        background: linear-gradient(180deg, #0f1c33 0%, #0a1324 100%);
-        border: 1px solid rgba(56, 189, 248, 0.18);
+        background: linear-gradient(180deg, #0d1a33 0%, #081122 100%);
+        border: 1px solid rgba(56, 189, 248, 0.2);
         border-radius: 12px;
-        padding: 1.1rem 1.25rem;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        padding: 1.15rem 1.25rem;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
         position: relative;
         overflow: hidden;
+        transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.26s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.26s ease;
     }
     .secops-metric-card::before {
         content: "";
         position: absolute;
         top: 0; left: 0; right: 0; height: 2px;
-        background: linear-gradient(90deg, #0284c7, #38bdf8, transparent);
+        background: linear-gradient(90deg, #0284c7 0%, #00f2fe 50%, transparent 100%);
+        transition: height 0.2s ease, opacity 0.2s ease;
+    }
+    .secops-metric-card:hover {
+        transform: translateY(-4px) scale(1.008);
+        border-color: rgba(0, 242, 254, 0.45);
+        box-shadow: 0 16px 36px -4px rgba(0, 0, 0, 0.65), 0 0 20px rgba(0, 242, 254, 0.16);
+    }
+    .secops-metric-card:hover::before {
+        height: 3px;
     }
     .secops-metric-title {
-        font-size: 0.75rem;
+        font-size: 0.74rem;
         font-weight: 600;
         letter-spacing: 0.8px;
         color: #94a3b8;
         text-transform: uppercase;
-        margin-bottom: 0.4rem;
+        margin-bottom: 0.45rem;
         display: flex;
         justify-content: space-between;
+        align-items: center;
     }
     .secops-metric-value {
-        font-size: 2.1rem;
-        font-weight: 700;
+        font-size: 2.15rem;
+        font-weight: 800;
         color: #f8fafc;
         letter-spacing: -0.5px;
         line-height: 1.1;
+        font-variant-numeric: tabular-nums;
+        transition: color 0.2s ease;
+    }
+    .secops-metric-card:hover .secops-metric-value {
+        color: #ffffff;
     }
     .secops-metric-sub {
-        font-size: 0.8rem;
+        font-size: 0.78rem;
         color: #94a3b8;
-        margin-top: 0.4rem;
+        margin-top: 0.45rem;
     }
 
     /* Section Panels */
     .secops-panel {
-        background: #0b1426;
-        border: 1px solid rgba(56, 189, 248, 0.15);
+        background: linear-gradient(180deg, #0b1528 0%, #081020 100%);
+        border: 1px solid rgba(56, 189, 248, 0.18);
         border-radius: 12px;
-        padding: 1.25rem;
-        margin-bottom: 1.2rem;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+        padding: 1.3rem;
+        margin-bottom: 1.25rem;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+        transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s ease;
+    }
+    .secops-panel:hover {
+        border-color: rgba(56, 189, 248, 0.32);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
     }
     .secops-panel-title {
-        font-size: 1.1rem;
-        font-weight: 600;
+        font-size: 1.12rem;
+        font-weight: 700;
         color: #f8fafc;
         margin-bottom: 0.25rem;
         display: flex;
@@ -289,149 +417,281 @@ st.markdown(
         margin-bottom: 1rem;
     }
 
-    /* Verdict Dossier Hero Box */
+    /* QR Scanner HUD Target Reticle & Laser Sweep */
+    .scanner-preview-wrapper {
+        position: relative;
+        overflow: hidden;
+        border-radius: 14px;
+        border: 1px solid rgba(56, 189, 248, 0.45);
+        margin-bottom: 0.9rem;
+        background: #050b18;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), inset 0 0 24px rgba(0, 242, 254, 0.04);
+    }
+    .scanner-corner {
+        position: absolute;
+        width: 22px;
+        height: 22px;
+        z-index: 12;
+        pointer-events: none;
+    }
+    .scanner-corner-tl {
+        top: 8px; left: 8px;
+        border-top: 3px solid #00f2fe;
+        border-left: 3px solid #00f2fe;
+        box-shadow: -2px -2px 10px rgba(0, 242, 254, 0.5);
+    }
+    .scanner-corner-tr {
+        top: 8px; right: 8px;
+        border-top: 3px solid #00f2fe;
+        border-right: 3px solid #00f2fe;
+        box-shadow: 2px -2px 10px rgba(0, 242, 254, 0.5);
+    }
+    .scanner-corner-bl {
+        bottom: 8px; left: 8px;
+        border-bottom: 3px solid #00f2fe;
+        border-left: 3px solid #00f2fe;
+        box-shadow: -2px 2px 10px rgba(0, 242, 254, 0.5);
+    }
+    .scanner-corner-br {
+        bottom: 8px; right: 8px;
+        border-bottom: 3px solid #00f2fe;
+        border-right: 3px solid #00f2fe;
+        box-shadow: 2px 2px 10px rgba(0, 242, 254, 0.5);
+    }
+    .scanner-laser {
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3.5px;
+        background: linear-gradient(90deg, transparent 0%, #00f2fe 15%, #ffffff 50%, #00f2fe 85%, transparent 100%);
+        box-shadow: 0 0 16px 3px rgba(0, 242, 254, 0.9), 0 0 32px 6px rgba(56, 189, 248, 0.5);
+        animation: cyberLaserSweep 2.2s ease-in-out infinite alternate;
+        z-index: 10;
+        pointer-events: none;
+    }
+    .scanner-laser::after {
+        content: "";
+        position: absolute;
+        top: 0; left: 5%; right: 5%;
+        height: 42px;
+        background: linear-gradient(180deg, rgba(0, 242, 254, 0.25) 0%, transparent 100%);
+        pointer-events: none;
+    }
+    @keyframes cyberLaserSweep {
+        0% { top: 2%; opacity: 0.45; }
+        50% { opacity: 1; }
+        100% { top: 96%; opacity: 0.45; }
+    }
+    .scanner-hud-tag {
+        position: absolute;
+        bottom: 10px; right: 12px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.68rem;
+        font-weight: 600;
+        color: #38bdf8;
+        background: rgba(6, 11, 23, 0.88);
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        border-radius: 4px;
+        padding: 3px 8px;
+        letter-spacing: 0.8px;
+        z-index: 11;
+        pointer-events: none;
+    }
+
+    /* Pipeline 4-Stage HUD Step Indicator */
+    .pipeline-hud-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: #081122;
+        border: 1px solid rgba(56, 189, 248, 0.22);
+        border-radius: 8px;
+        padding: 0.6rem 0.8rem;
+        margin-bottom: 1rem;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem;
+        color: #94a3b8;
+        overflow-x: auto;
+        gap: 0.4rem;
+    }
+    .pipeline-hud-step {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        white-space: nowrap;
+    }
+    .pipeline-hud-step.completed {
+        color: #34d399;
+        font-weight: 600;
+    }
+    .pipeline-hud-step.active {
+        color: #00f2fe;
+        font-weight: 700;
+    }
+    .hud-step-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #34d399;
+        box-shadow: 0 0 6px #34d399;
+        display: inline-block;
+    }
+
+    /* Verdict Dossier Hero Card with Thematic Threat Glows */
     .dossier-hero {
-        background: linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(11, 20, 38, 0.95) 100%);
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(10, 18, 35, 0.96) 100%);
         border: 1px solid rgba(239, 68, 68, 0.35);
         border-radius: 14px;
         padding: 1.5rem;
         margin-bottom: 1.5rem;
         position: relative;
+        overflow: hidden;
+        transition: all 0.3s ease;
     }
     .dossier-hero-permitted {
-        border-color: rgba(16, 185, 129, 0.4);
+        border-color: rgba(16, 185, 129, 0.5);
+        background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(10, 20, 36, 0.96) 100%);
+        box-shadow: 0 0 32px rgba(16, 185, 129, 0.2), 0 8px 24px rgba(0, 0, 0, 0.5);
+        animation: safeBloomAura 3s ease-in-out infinite alternate;
     }
+    @keyframes safeBloomAura {
+        0% { box-shadow: 0 0 20px rgba(16, 185, 129, 0.15), 0 8px 24px rgba(0,0,0,0.5); border-color: rgba(16, 185, 129, 0.4); }
+        100% { box-shadow: 0 0 38px rgba(16, 185, 129, 0.35), 0 8px 24px rgba(0,0,0,0.5); border-color: rgba(16, 185, 129, 0.7); }
+    }
+    .dossier-hero-blocked {
+        border-color: rgba(239, 68, 68, 0.65);
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(15, 23, 42, 0.98) 100%);
+        box-shadow: 0 0 40px rgba(239, 68, 68, 0.35), 0 8px 24px rgba(0, 0, 0, 0.5);
+        animation: dangerVignetteAlert 1.8s ease-in-out infinite;
+    }
+    @keyframes dangerVignetteAlert {
+        0%, 100% {
+            border-color: rgba(239, 68, 68, 0.5);
+            box-shadow: 0 0 25px rgba(239, 68, 68, 0.25), 0 8px 24px rgba(0,0,0,0.5);
+        }
+        50% {
+            border-color: rgba(239, 68, 68, 0.95);
+            box-shadow: 0 0 50px rgba(239, 68, 68, 0.55), 0 8px 24px rgba(0,0,0,0.5);
+        }
+    }
+    .dossier-hero-warn {
+        border-color: rgba(245, 158, 11, 0.55);
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.09) 0%, rgba(15, 23, 42, 0.96) 100%);
+        box-shadow: 0 0 30px rgba(245, 158, 11, 0.22);
+        animation: warnPulseAura 2.2s ease-in-out infinite;
+    }
+    @keyframes warnPulseAura {
+        0%, 100% { border-color: rgba(245, 158, 11, 0.4); box-shadow: 0 0 18px rgba(245, 158, 11, 0.18); }
+        50% { border-color: rgba(245, 158, 11, 0.85); box-shadow: 0 0 36px rgba(245, 158, 11, 0.4); }
+    }
+
     .dossier-pill-blocked {
-        background: rgba(239, 68, 68, 0.15);
+        background: rgba(239, 68, 68, 0.18);
         color: #f87171;
-        border: 1px solid rgba(239, 68, 68, 0.4);
-        padding: 0.2rem 0.6rem;
+        border: 1px solid rgba(239, 68, 68, 0.5);
+        padding: 0.22rem 0.65rem;
         border-radius: 6px;
         font-size: 0.72rem;
-        font-weight: 600;
-        letter-spacing: 0.5px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        box-shadow: 0 0 12px rgba(239, 68, 68, 0.2);
     }
     .dossier-pill-permitted {
-        background: rgba(16, 185, 129, 0.15);
+        background: rgba(16, 185, 129, 0.18);
         color: #34d399;
-        border: 1px solid rgba(16, 185, 129, 0.4);
-        padding: 0.2rem 0.6rem;
+        border: 1px solid rgba(16, 185, 129, 0.5);
+        padding: 0.22rem 0.65rem;
         border-radius: 6px;
         font-size: 0.72rem;
-        font-weight: 600;
-        letter-spacing: 0.5px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        box-shadow: 0 0 12px rgba(16, 185, 129, 0.2);
     }
 
-    /* Risk Donut Ring */
-    .risk-circle-box {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        width: 130px;
-        height: 130px;
-        border-radius: 50%;
-        border: 6px solid #ef4444;
-        background: rgba(239, 68, 68, 0.05);
-        text-align: center;
-        margin: auto;
-    }
-    .risk-circle-box-safe {
-        border-color: #10b981;
-        background: rgba(16, 185, 129, 0.05);
-    }
-    .risk-circle-score {
-        font-size: 2.1rem;
-        font-weight: 800;
-        color: #f8fafc;
-        line-height: 1;
-    }
-    .risk-circle-label {
-        font-size: 0.7rem;
-        font-weight: 600;
-        color: #94a3b8;
-        letter-spacing: 0.5px;
-    }
-
-    /* Pipeline 3-Stage Architecture Card */
-    .pipeline-stage-card {
-        background: #0d172a;
-        border: 1px solid rgba(56, 189, 248, 0.2);
-        border-radius: 10px;
-        padding: 1.1rem;
+    /* Welcome / Landing Role Cards */
+    .landing-card {
+        background: linear-gradient(180deg, #0e1b36 0%, #091325 100%);
+        border: 1px solid rgba(56, 189, 248, 0.24);
+        border-radius: 16px;
+        padding: 2.2rem 2rem;
+        box-shadow: 0 16px 42px rgba(0, 0, 0, 0.5);
         height: 100%;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
-    }
-    .pipeline-stage-badge {
-        font-size: 0.7rem;
-        font-weight: 600;
-        color: #38bdf8;
-        letter-spacing: 0.5px;
-        text-transform: uppercase;
-        margin-bottom: 0.4rem;
-    }
-    .pipeline-stage-title {
-        font-size: 1.05rem;
-        font-weight: 700;
-        color: #f8fafc;
-        margin-bottom: 0.6rem;
-    }
-
-    /* Scanner Laser Beam Animation */
-    .scanner-preview-wrapper {
         position: relative;
         overflow: hidden;
-        border-radius: 12px;
-        border: 1px solid rgba(56, 189, 248, 0.35);
-        margin-bottom: 0.8rem;
-        background: #060b17;
+        transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.28s ease, box-shadow 0.28s ease;
     }
-    .scanner-laser {
+    .landing-card::before {
+        content: "";
         position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 3px;
-        background: linear-gradient(90deg, transparent 0%, #38bdf8 20%, #00f0ff 50%, #38bdf8 80%, transparent 100%);
-        box-shadow: 0 0 12px 2px rgba(56, 189, 248, 0.8);
-        animation: laserScan 2.4s ease-in-out infinite alternate;
-        z-index: 10;
-        pointer-events: none;
-    }
-    @keyframes laserScan {
-        0% { top: 2%; opacity: 0.5; }
-        50% { opacity: 1; }
-        100% { top: 96%; opacity: 0.5; }
-    }
-
-    /* Card Micro-Animations */
-    .secops-panel, .secops-metric-card, .landing-card {
-        transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s ease;
-    }
-    .secops-panel:hover, .secops-metric-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 10px 28px -4px rgba(0, 0, 0, 0.45);
-        border-color: rgba(56, 189, 248, 0.35);
-    }
-
-    /* Welcome / Landing Screen */
-    .landing-card {
-        background: linear-gradient(180deg, #0d182e 0%, #091122 100%);
-        border: 1px solid rgba(56, 189, 248, 0.22);
-        border-radius: 16px;
-        padding: 2rem 1.8rem;
-        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
+        top: 0; left: 0; right: 0; height: 3px;
+        background: linear-gradient(90deg, #0284c7 0%, #00f2fe 50%, transparent 100%);
+        opacity: 0.6;
+        transition: opacity 0.25s ease;
     }
     .landing-card:hover {
-        transform: translateY(-3px);
-        border-color: rgba(56, 189, 248, 0.45);
-        box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6);
+        transform: translateY(-5px) scale(1.01);
+        border-color: rgba(0, 242, 254, 0.5);
+        box-shadow: 0 24px 54px rgba(0, 0, 0, 0.65), 0 0 28px rgba(0, 242, 254, 0.2);
+    }
+    .landing-card:hover::before {
+        opacity: 1;
+    }
+
+    /* Polished Streamlit Buttons with Cyber Glow */
+    .stButton>button {
+        transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.3px !important;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(56, 189, 248, 0.25) !important;
+    }
+    .stButton>button:active {
+        transform: translateY(0px);
+    }
+
+    /* Sidebar Navigation with Cyber Cyan Accents */
+    section[data-testid="stSidebar"] div[data-testid="stRadio"] > div {
+        gap: 0.25rem !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stRadio"] label {
+        background: transparent !important;
+        border-radius: 8px !important;
+        padding: 0.45rem 0.8rem !important;
+        transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        border-left: 2px solid transparent !important;
+        margin: 0 !important;
+        cursor: pointer !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stRadio"] label:hover {
+        background: rgba(56, 189, 248, 0.08) !important;
+        border-left: 2px solid #38bdf8 !important;
+        color: #f8fafc !important;
+        transform: translateX(3px);
+    }
+    section[data-testid="stSidebar"] div[data-testid="stRadio"] label:has(input:checked) {
+        background: linear-gradient(90deg, rgba(56, 189, 248, 0.16) 0%, rgba(56, 189, 248, 0.02) 100%) !important;
+        border-left: 3px solid #00f2fe !important;
+        box-shadow: inset 1px 0 12px rgba(0, 242, 254, 0.15) !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stRadio"] label:has(input:checked) p {
+        color: #00f2fe !important;
+        font-weight: 600 !important;
+    }
+
+    /* Polished Loading Skeleton / Shimmer */
+    .cyber-skeleton {
+        background: linear-gradient(90deg, rgba(14, 25, 46, 0.8) 0%, rgba(30, 48, 80, 0.8) 50%, rgba(14, 25, 46, 0.8) 100%);
+        background-size: 200% 100%;
+        animation: cyberShimmer 2s infinite ease-in-out;
+        border-radius: 8px;
+    }
+    @keyframes cyberShimmer {
+        0% { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
     }
 
     /* Mobile Responsive Rules */
@@ -441,7 +701,10 @@ st.markdown(
             align-items: flex-start;
         }
         .secops-metric-value {
-            font-size: 1.8rem;
+            font-size: 1.85rem;
+        }
+        .landing-card {
+            padding: 1.5rem 1.25rem;
         }
         .stButton>button {
             min-height: 48px;
@@ -449,14 +712,14 @@ st.markdown(
         }
     }
 
-    /* Reduced Motion Accessibility */
+    /* Accessibility: Reduced Motion */
     @media (prefers-reduced-motion: reduce) {
         *, ::before, ::after {
             animation-duration: 0.01ms !important;
             animation-iteration-count: 1 !important;
             transition-duration: 0.01ms !important;
         }
-        .scanner-laser, .pulse-dot {
+        .scanner-laser, .pulse-dot::before, .cyber-shield-halo, .cyber-shield-svg, .p-node-1, .p-node-2, .p-node-3, .p-node-4, .p-node-5 {
             animation: none !important;
         }
     }
@@ -515,21 +778,51 @@ def render_landing_page() -> None:
     """Render the high-impact QRShield welcome and role selection landing page."""
     st.markdown(
         """
-        <div style="text-align: center; padding: 2.5rem 1rem 2rem 1rem;">
-            <div style="display: inline-flex; align-items: center; justify-content: center; width: 68px; height: 68px; border-radius: 18px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); margin-bottom: 1.25rem;">
-                <span style="font-size: 2.2rem;">🛡️</span>
+        <div class="cyber-particles-field">
+            <div class="cyber-particle p-node-1"></div>
+            <div class="cyber-particle p-node-2"></div>
+            <div class="cyber-particle p-node-3"></div>
+            <div class="cyber-particle p-node-4"></div>
+            <div class="cyber-particle p-node-5"></div>
+        </div>
+        <div class="animate-fade-in-up stagger-1" style="text-align: center; padding: 2.2rem 1rem 1.8rem 1rem; position: relative; z-index: 1;">
+            <div class="cyber-shield-container">
+                <div class="cyber-shield-halo"></div>
+                <svg class="cyber-shield-svg" viewBox="0 0 100 100" width="82" height="82" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#00f2fe" />
+                            <stop offset="50%" stop-color="#38bdf8" />
+                            <stop offset="100%" stop-color="#0284c7" />
+                        </linearGradient>
+                        <linearGradient id="shieldFill" x1="0%" y1="0%" x2="0%" y2="100%">
+                            <stop offset="0%" stop-color="#0e1f38" stop-opacity="0.95" />
+                            <stop offset="100%" stop-color="#060c18" stop-opacity="0.98" />
+                        </linearGradient>
+                    </defs>
+                    <path d="M50 7 L86 24 V52 C86 74 50 93 50 93 C50 93 14 74 14 52 V24 L50 7 Z" fill="url(#shieldFill)" stroke="url(#shieldGrad)" stroke-width="2.6" stroke-linejoin="round" />
+                    <path d="M50 17 L78 29 V50 C78 67 50 82 50 82 C50 82 22 67 22 50 V29 L50 17 Z" stroke="rgba(0, 242, 254, 0.35)" stroke-width="1.2" stroke-dasharray="3 3" />
+                    <!-- Cyber Reticle Inner Core -->
+                    <rect x="42" y="36" width="16" height="16" rx="3.5" stroke="#00f2fe" stroke-width="1.6" fill="rgba(0, 242, 254, 0.15)" />
+                    <rect x="46" y="40" width="8" height="8" rx="1.8" fill="#00f2fe" />
+                    <!-- Precision Radar Crosshairs -->
+                    <line x1="50" y1="27" x2="50" y2="33" stroke="#38bdf8" stroke-width="1.6" stroke-linecap="round" />
+                    <line x1="50" y1="55" x2="50" y2="61" stroke="#38bdf8" stroke-width="1.6" stroke-linecap="round" />
+                    <line x1="33" y1="44" x2="39" y2="44" stroke="#38bdf8" stroke-width="1.6" stroke-linecap="round" />
+                    <line x1="61" y1="44" x2="67" y2="44" stroke="#38bdf8" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
             </div>
-            <h1 style="font-size: 2.6rem; font-weight: 800; color: #f8fafc; margin-bottom: 0.5rem; letter-spacing: -0.5px;">
-                QRShield <span style="color: #38bdf8;">SecOps ThreatLab</span>
+            <h1 style="font-size: 2.7rem; font-weight: 800; color: #f8fafc; margin-bottom: 0.5rem; letter-spacing: -0.6px; line-height: 1.15;">
+                QRShield <span style="background: linear-gradient(135deg, #00f2fe 0%, #38bdf8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">SecOps ThreatLab</span>
             </h1>
-            <p style="font-size: 1.1rem; color: #94a3b8; max-width: 780px; margin: 0 auto 1.5rem auto; line-height: 1.5;">
-                QR Scam & Malicious Redirection Detection Using Reinforcement Learning for Classification and Adaptive Threat Prevention.
+            <p style="font-size: 1.1rem; color: #94a3b8; max-width: 780px; margin: 0 auto 1.5rem auto; line-height: 1.55;">
+                Autonomous QR Scam & Malicious Redirection Detection Using Reinforcement Learning for Dynamic Classification and Adaptive Threat Prevention.
             </p>
-            <div style="display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; margin-bottom: 2rem;">
+            <div style="display: flex; gap: 0.65rem; justify-content: center; flex-wrap: wrap; margin-bottom: 2rem;">
                 <span class="workspace-pill">⚡ ZERO-TRUST SANDBOX</span>
                 <span class="workspace-pill">🧠 ADAPTIVE Q-POLICY</span>
-                <span class="workspace-pill">🌲 RANDOM FOREST INFERENCE</span>
-                <span class="workspace-pill">🔒 SUPABASE ENCRYPTED</span>
+                <span class="workspace-pill">🌲 RANDOM FOREST ENSEMBLE</span>
+                <span class="workspace-pill">🔒 SUPABASE TLS ENCRYPTED</span>
             </div>
         </div>
         """,
@@ -541,23 +834,31 @@ def render_landing_page() -> None:
     with col_user:
         st.markdown(
             """
-            <div class="landing-card">
+            <div class="landing-card animate-fade-in-up stagger-2">
                 <div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                        <span style="font-size: 2rem;">📷</span>
-                        <span class="status-chip status-chip-green">Public Scanner • Free Access</span>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.1rem;">
+                        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); display: flex; align-items: center; justify-content: center;">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                                <circle cx="12" cy="13" r="4"></circle>
+                            </svg>
+                        </div>
+                        <span class="status-chip status-chip-green">
+                            <span class="pulse-dot"></span>
+                            Public Scanner • Free Access
+                        </span>
                     </div>
-                    <h3 style="color: #f8fafc; font-size: 1.4rem; margin-bottom: 0.5rem;">Continue as User</h3>
-                    <p style="color: #94a3b8; font-size: 0.92rem; line-height: 1.5; margin-bottom: 1.2rem;">
-                        Scan any suspicious QR code using your device camera or image upload. Get instant lexical analysis,
-                        machine learning classification, and zero-trust safe destination opening.
+                    <h3 style="color: #f8fafc; font-size: 1.45rem; font-weight: 700; margin-bottom: 0.5rem;">Continue as Public User</h3>
+                    <p style="color: #94a3b8; font-size: 0.92rem; line-height: 1.55; margin-bottom: 1.2rem;">
+                        Scan any suspicious physical QR code or digital image safely. Receive instant optical payload decomposition,
+                        ensemble threat inference, and zero-trust isolated link opening.
                     </p>
-                    <ul style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.8; margin-bottom: 1.5rem; padding-left: 1.2rem;">
-                        <li>Upload QR image (PNG, JPG) or live camera scanning</li>
+                    <ul style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.85; margin-bottom: 1.6rem; padding-left: 1.2rem;">
+                        <li>Upload QR image (PNG, JPG) or live camera capture</li>
                         <li>Static payload decomposition & URL normalization</li>
                         <li>Random Forest classification & Q-Learning verdict</li>
-                        <li>Explicit, safe link opening for clean destinations</li>
-                        <li>Strict isolation of high-risk phishing payloads</li>
+                        <li>Explicit link opening only for verified clean destinations</li>
+                        <li>Zero risk: high-threat phishing payloads completely isolated</li>
                     </ul>
                 </div>
             </div>
@@ -572,23 +873,30 @@ def render_landing_page() -> None:
     with col_admin:
         st.markdown(
             """
-            <div class="landing-card">
+            <div class="landing-card animate-fade-in-up stagger-3">
                 <div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                        <span style="font-size: 2rem;">🔐</span>
-                        <span class="status-chip status-chip-blue">SecOps Command • Authorized Only</span>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.1rem;">
+                        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); display: flex; align-items: center; justify-content: center;">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                            </svg>
+                        </div>
+                        <span class="status-chip status-chip-blue">
+                            SecOps Command • Authorized Only
+                        </span>
                     </div>
-                    <h3 style="color: #f8fafc; font-size: 1.4rem; margin-bottom: 0.5rem;">SecOps Administrator Login</h3>
-                    <p style="color: #94a3b8; font-size: 0.92rem; line-height: 1.5; margin-bottom: 1.2rem;">
-                        Access the complete Cybersecurity Operations Center. Review longitudinal threat analytics,
-                        verdict dossiers, model evaluation metrics, and the adaptive reinforcement learning policy suite.
+                    <h3 style="color: #f8fafc; font-size: 1.45rem; font-weight: 700; margin-bottom: 0.5rem;">SecOps Administrator Portal</h3>
+                    <p style="color: #94a3b8; font-size: 0.92rem; line-height: 1.55; margin-bottom: 1.2rem;">
+                        Access the central Threat Operations Center. Inspect longitudinal attack telemetry,
+                        relational audit trails, ML decision boundaries, and adaptive Q-learning policy matrices.
                     </p>
-                    <ul style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.8; margin-bottom: 1.5rem; padding-left: 1.2rem;">
-                        <li>Full Operational Overview & telemetry dashboards</li>
-                        <li>Threat Analysis Dossiers with 3-stage decision architecture</li>
-                        <li>Audit scan history & authorized CSV export</li>
-                        <li>Real-time MITRE ATT&CK taxonomy & attack analytics</li>
-                        <li>Q-Learning policy optimization & cost matrix controls</li>
+                    <ul style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.85; margin-bottom: 1.6rem; padding-left: 1.2rem;">
+                        <li>Complete Operational Overview & live Supabase telemetry</li>
+                        <li>Deep Threat Analysis dossiers with 3-stage decision architecture</li>
+                        <li>Global audit history with authorized forensic CSV export</li>
+                        <li>Interactive MITRE ATT&CK taxonomy & attack vector analytics</li>
+                        <li>Q-Learning policy optimization, reward telemetry, & cost tuning</li>
                     </ul>
                 </div>
             </div>
@@ -604,13 +912,16 @@ def render_admin_login_page() -> None:
     """Render the dedicated, secure SecOps administrator login screen."""
     st.markdown(
         """
-        <div style="max-width: 480px; margin: 3rem auto 1rem auto; text-align: center;">
-            <div style="display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 14px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); margin-bottom: 1rem;">
-                <span style="font-size: 1.8rem;">🔐</span>
+        <div class="animate-fade-in-up stagger-1" style="max-width: 480px; margin: 3rem auto 1.2rem auto; text-align: center;">
+            <div style="display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; border-radius: 16px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); box-shadow: 0 0 20px rgba(56, 189, 248, 0.2); margin-bottom: 1rem;">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                </svg>
             </div>
-            <h2 style="font-size: 1.8rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.4rem;">SecOps Administrator Login</h2>
+            <h2 style="font-size: 1.9rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.4rem;">SecOps Administrator Login</h2>
             <p style="font-size: 0.92rem; color: #94a3b8; margin-bottom: 1.5rem;">
-                Enter authorized Supabase credentials to access restricted threat operations.
+                Enter verified credentials to authenticate via Supabase Auth and unlock privileged SecOps telemetry.
             </p>
         </div>
         """,
@@ -659,6 +970,9 @@ def render_secops_top_bar() -> None:
         f"""
         <div class="secops-top-bar">
             <div class="secops-top-left">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#00f2fe" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="filter: drop-shadow(0 0 6px rgba(0, 242, 254, 0.7));">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
                 <span style="font-size: 1.25rem; font-weight: 800; color: #f8fafc; letter-spacing: -0.3px;">QRShield</span>
                 <span class="workspace-pill">WORKSPACE: SEC-OPS-CANVAS</span>
             </div>
@@ -695,8 +1009,12 @@ def render_sidebar() -> None:
         st.markdown(
             """
             <div style="display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0 1rem 0;">
-                <div style="width: 38px; height: 38px; border-radius: 10px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); display: flex; align-items: center; justify-content: center;">
-                    <span style="font-size: 1.25rem;">🛡️</span>
+                <div style="width: 38px; height: 38px; border-radius: 10px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 16px rgba(56, 189, 248, 0.25);">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        <path d="M12 8v4"/>
+                        <path d="M12 16h.01"/>
+                    </svg>
                 </div>
                 <div>
                     <div style="font-size: 1.15rem; font-weight: 700; color: #f8fafc; letter-spacing: -0.3px;">QRShield</div>
@@ -932,8 +1250,15 @@ def render_overview_screen() -> None:
             f"""
             <div class="secops-metric-card">
                 <div class="secops-metric-title">
-                    <span>Total Database Scans</span>
-                    <span style="color: #38bdf8;">Live Sync</span>
+                    <span style="display: flex; align-items: center; gap: 0.45rem;">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                        </svg>
+                        Total Database Scans
+                    </span>
+                    <span style="color: #38bdf8; display: inline-flex; align-items: center; gap: 0.35rem;"><span class="pulse-dot" style="width: 6px; height: 6px;"></span> Live Sync</span>
                 </div>
                 <div class="secops-metric-value">{total_scans:,}</div>
                 <div class="secops-metric-sub">Recorded in Supabase scan_history</div>
@@ -946,7 +1271,14 @@ def render_overview_screen() -> None:
             f"""
             <div class="secops-metric-card">
                 <div class="secops-metric-title">
-                    <span>Threats Intercepted</span>
+                    <span style="display: flex; align-items: center; gap: 0.45rem;">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                            <line x1="12" y1="8" x2="12" y2="12"></line>
+                            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                        Threats Intercepted
+                    </span>
                     <span class="dossier-pill-blocked">{threat_rate:.1f}% Rate</span>
                 </div>
                 <div class="secops-metric-value" style="color: #f87171;">{threats_count:,}</div>
@@ -960,7 +1292,13 @@ def render_overview_screen() -> None:
             f"""
             <div class="secops-metric-card">
                 <div class="secops-metric-title">
-                    <span>URLs Blocked</span>
+                    <span style="display: flex; align-items: center; gap: 0.45rem;">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+                        </svg>
+                        URLs Blocked
+                    </span>
                     <span class="dossier-pill-blocked">{intercept_rate:.1f}% Intercept</span>
                 </div>
                 <div class="secops-metric-value" style="color: #ef4444;">{blocked_count:,}</div>
@@ -974,7 +1312,13 @@ def render_overview_screen() -> None:
             f"""
             <div class="secops-metric-card">
                 <div class="secops-metric-title">
-                    <span>URLs Permitted</span>
+                    <span style="display: flex; align-items: center; gap: 0.45rem;">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        </svg>
+                        URLs Permitted
+                    </span>
                     <span class="dossier-pill-permitted">Verified Clean</span>
                 </div>
                 <div class="secops-metric-value" style="color: #34d399;">{permitted_count:,}</div>
@@ -1273,29 +1617,54 @@ def render_scan_qr_screen() -> None:
                 file_bytes = uploaded.read()
                 source_name = uploaded.name
                 st.session_state["last_uploaded_filename"] = source_name
-                st.markdown(
-                    """
-                    <div class="scanner-preview-wrapper">
-                        <div class="scanner-laser"></div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                st.image(file_bytes, caption=f"Active Payload: {source_name}", use_container_width=True)
         else:
             cam_pic = st.camera_input("Capture QR Code with Device Camera", key="scanner_camera_input")
             if cam_pic is not None:
                 file_bytes = cam_pic.read()
                 source_name = "camera_capture.png"
                 st.session_state["last_uploaded_filename"] = source_name
-                st.markdown(
-                    """
-                    <div class="scanner-preview-wrapper">
-                        <div class="scanner-laser"></div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+
+        if file_bytes is not None:
+            b64_img = base64.b64encode(file_bytes).decode("utf-8")
+            ext = (source_name or "img.png").split(".")[-1].lower()
+            mime = "image/png" if ext == "png" else ("image/jpeg" if ext in ["jpg", "jpeg"] else "image/png")
+            st.markdown(
+                f"""
+                <div class="scanner-preview-wrapper animate-fade-in-up">
+                    <div class="scanner-corner scanner-corner-tl"></div>
+                    <div class="scanner-corner scanner-corner-tr"></div>
+                    <div class="scanner-corner scanner-corner-bl"></div>
+                    <div class="scanner-corner scanner-corner-br"></div>
+                    <div class="scanner-laser"></div>
+                    <div class="scanner-hud-tag">SEC-SCAN // ACTIVE 60FPS</div>
+                    <img src="data:{mime};base64,{b64_img}" alt="Active QR Payload Preview" style="width: 100%; max-height: 360px; object-fit: contain; display: block; border-radius: 8px; margin: 0 auto; padding: 0.5rem;" />
+                </div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.74rem; color: #94a3b8; text-align: center; margin-top: 0.4rem; margin-bottom: 0.6rem;">
+                    Target: <span style="color: #38bdf8; font-weight: 600;">{source_name}</span> ({len(file_bytes):,} bytes)
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                """
+                <div class="scanner-preview-wrapper" style="min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(56, 189, 248, 0.08) 0%, rgba(6, 11, 23, 0.8) 70%); border: 1px dashed rgba(56, 189, 248, 0.25); border-radius: 12px; margin-top: 0.6rem; margin-bottom: 0.8rem;">
+                    <div class="scanner-corner scanner-corner-tl"></div>
+                    <div class="scanner-corner scanner-corner-tr"></div>
+                    <div class="scanner-corner scanner-corner-bl"></div>
+                    <div class="scanner-corner scanner-corner-br"></div>
+                    <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.75; margin-bottom: 0.75rem;">
+                        <rect x="3" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="14" width="7" height="7"></rect>
+                        <rect x="3" y="14" width="7" height="7"></rect>
+                    </svg>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; color: #94a3b8; letter-spacing: 0.6px; font-weight: 600;">AWAITING QR TELEMETRY INPUT</div>
+                    <div style="font-size: 0.72rem; color: #64748b; margin-top: 0.25rem;">Upload PNG/JPG or activate device camera above</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         if file_bytes is not None:
             if st.button("⚡ Decode & Inspect QR Code", type="primary", use_container_width=True):
@@ -1412,10 +1781,19 @@ def render_scan_qr_screen() -> None:
         if scan_res is None or nav_dec is None:
             st.markdown(
                 """
-                <div style="background: rgba(15, 23, 42, 0.6); border: 2px dashed #1e293b; border-radius: 12px; padding: 3rem 1.5rem; text-align: center;">
-                    <div style="font-size: 2.2rem; margin-bottom: 0.8rem;">📷</div>
+                <div class="scanner-preview-wrapper" style="min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(15, 23, 42, 0.7) 0%, rgba(8, 17, 34, 0.95) 100%); border: 1px dashed rgba(56, 189, 248, 0.25); border-radius: 12px; margin-bottom: 1rem;">
+                    <div class="scanner-corner scanner-corner-tl"></div>
+                    <div class="scanner-corner scanner-corner-tr"></div>
+                    <div class="scanner-corner scanner-corner-bl"></div>
+                    <div class="scanner-corner scanner-corner-br"></div>
+                    <div style="display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 50%; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); margin-bottom: 0.8rem; box-shadow: 0 0 20px rgba(56, 189, 248, 0.15);">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                            <circle cx="12" cy="11" r="3"/>
+                        </svg>
+                    </div>
                     <h4 style="color: #f8fafc; margin-bottom: 0.3rem;">No QR Code Scanned Yet</h4>
-                    <p style="color: #94a3b8; font-size: 0.88rem; max-width: 320px; margin: 0 auto;">
+                    <p style="color: #94a3b8; font-size: 0.88rem; max-width: 320px; margin: 0 auto; text-align: center;">
                         Upload a QR code or snap one with your device camera on the left, then click <strong>Decode & Inspect</strong>.
                     </p>
                 </div>
@@ -1430,18 +1808,44 @@ def render_scan_qr_screen() -> None:
             item = scan_res.items[0]
             status_cat = nav_dec["status_category"]
             dec: PreventionDecision = nav_dec["decision"]
+            accent_color = "#34d399" if status_cat == "PERMITTED" else ("#ef4444" if status_cat == "BLOCKED" else "#f59e0b")
+
+            # 4-Stage HUD Step Indicator
+            st.markdown(
+                f"""
+                <div class="pipeline-hud-strip animate-fade-in-up">
+                    <div class="pipeline-hud-step completed"><span class="hud-step-dot"></span> Optical Decode ✓</div>
+                    <span style="color: #475569;">›</span>
+                    <div class="pipeline-hud-step completed"><span class="hud-step-dot"></span> Redirection Hops ✓</div>
+                    <span style="color: #475569;">›</span>
+                    <div class="pipeline-hud-step completed"><span class="hud-step-dot"></span> RF Ensemble ✓</div>
+                    <span style="color: #475569;">›</span>
+                    <div class="pipeline-hud-step active" style="color: {accent_color};">
+                        <span class="hud-step-dot" style="background: {accent_color}; box-shadow: 0 0 8px {accent_color};"></span>
+                        Q-Policy: {dec.final_action}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
             if status_cat == "PERMITTED":
                 st.markdown(
                     f"""
-                    <div class="dossier-hero dossier-hero-permitted">
+                    <div class="dossier-hero dossier-hero-permitted animate-fade-in-up">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-                            <span class="dossier-pill-permitted">VERIFIED SAFE • PERMITTED</span>
-                            <span style="font-size: 0.75rem; color: #34d399; font-weight: 600;">Risk: {dec.risk_score:.0f}/100</span>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.7));">
+                                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                                    <polyline points="9 12 11 14 15 10"></polyline>
+                                </svg>
+                                <span class="dossier-pill-permitted">VERIFIED SAFE • PERMITTED</span>
+                            </div>
+                            <span style="font-size: 0.75rem; color: #34d399; font-weight: 700; font-family: monospace;">RISK: {dec.risk_score:.0f}/100</span>
                         </div>
-                        <h3 style="color: #34d399; margin-top: 0; font-size: 1.3rem;">{nav_dec['display_title']}</h3>
+                        <h3 style="color: #34d399; margin-top: 0; font-size: 1.35rem;">{nav_dec['display_title']}</h3>
                         <p style="font-size: 0.92rem; color: #e2e8f0; margin-bottom: 0.5rem;">
-                            <strong>Destination:</strong> <code style="word-break: break-all;">{item.raw_payload}</code>
+                            <strong>Destination:</strong> <code style="word-break: break-all; color: #38bdf8;">{item.raw_payload}</code>
                         </p>
                         <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 1rem;">
                             {nav_dec['display_message']}
@@ -1461,25 +1865,32 @@ def render_scan_qr_screen() -> None:
                 ind_list = "".join(f"<li><code>{ind}</code></li>" for ind in nav_dec.get("detected_indicators", []))
                 st.markdown(
                     f"""
-                    <div class="dossier-hero">
+                    <div class="dossier-hero dossier-hero-blocked animate-fade-in-up">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-                            <span class="dossier-pill-blocked">CRITICAL THREAT • REDIRECTION BLOCKED</span>
-                            <span style="font-size: 0.75rem; color: #f87171; font-weight: 600;">Risk: {dec.risk_score:.0f}/100</span>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.8));">
+                                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                                </svg>
+                                <span class="dossier-pill-blocked">CRITICAL THREAT • REDIRECTION BLOCKED</span>
+                            </div>
+                            <span style="font-size: 0.75rem; color: #f87171; font-weight: 700; font-family: monospace;">RISK: {dec.risk_score:.0f}/100</span>
                         </div>
-                        <h3 style="color: #f87171; margin-top: 0; font-size: 1.3rem;">{nav_dec['display_title']}</h3>
+                        <h3 style="color: #f87171; margin-top: 0; font-size: 1.35rem;">{nav_dec['display_title']}</h3>
                         <p style="font-size: 0.92rem; color: #e2e8f0; margin-bottom: 0.5rem;">
-                            <strong>Destination:</strong> <code style="word-break: break-all;">{item.raw_payload}</code>
+                            <strong>Destination:</strong> <code style="word-break: break-all; color: #fca5a5;">{item.raw_payload}</code>
                         </p>
                         <p style="color: #fca5a5; font-size: 0.85rem; margin-bottom: 0.5rem;">
                             {nav_dec['display_message']}
                         </p>
-                        <div style="background: rgba(0,0,0,0.3); border-radius: 6px; padding: 0.6rem; margin-bottom: 0.75rem;">
-                            <div style="font-size: 0.8rem; font-weight: 600; color: #fecaca; margin-bottom: 0.25rem;">Detected Threat Indicators:</div>
+                        <div style="background: rgba(0,0,0,0.35); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 0.75rem; margin-bottom: 0.75rem;">
+                            <div style="font-size: 0.8rem; font-weight: 600; color: #fecaca; margin-bottom: 0.3rem;">Detected Threat Indicators:</div>
                             <ul style="font-size: 0.78rem; color: #fecaca; margin: 0; padding-left: 1.2rem;">
                                 {ind_list if ind_list else "<li>High-risk quishing or credential harvesting pattern detected</li>"}
                             </ul>
                         </div>
-                        <p style="font-size: 0.8rem; color: #ef4444; font-weight: 600; margin: 0;">
+                        <p style="font-size: 0.82rem; color: #ef4444; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 0.35rem;">
                             🚫 Direct navigation has been disabled by security policy. Do not visit this site.
                         </p>
                     </div>
@@ -1489,11 +1900,24 @@ def render_scan_qr_screen() -> None:
             elif status_cat == "UNCERTAIN":
                 st.markdown(
                     f"""
-                    <div style="background: rgba(245, 158, 11, 0.1); border: 2px solid #f59e0b; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem;">
-                        <h4 style="color: #fbbf24; margin-top: 0;">{nav_dec['display_title']}</h4>
-                        <p style="font-size: 0.92rem;"><strong>Extracted:</strong> <code>{item.raw_payload}</code></p>
-                        <p style="font-size: 0.85rem; color: #cbd5e1;">{nav_dec['display_message']}</p>
-                        <p style="font-size: 0.8rem; color: #f59e0b; font-weight: 600;">⚠️ Safety cannot be verified. Automatic navigation is withheld.</p>
+                    <div class="dossier-hero dossier-hero-warn animate-fade-in-up">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.7));">
+                                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                                    <line x1="12" y1="9" x2="12" y2="13"></line>
+                                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                                </svg>
+                                <span class="dossier-pill-warn" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); padding: 0.22rem 0.65rem; border-radius: 6px; font-size: 0.72rem; font-weight: 700;">SUSPICIOUS • CAUTION ADVISED</span>
+                            </div>
+                            <span style="font-size: 0.75rem; color: #fbbf24; font-weight: 700; font-family: monospace;">RISK: {dec.risk_score:.0f}/100</span>
+                        </div>
+                        <h3 style="color: #fbbf24; margin-top: 0; font-size: 1.35rem;">{nav_dec['display_title']}</h3>
+                        <p style="font-size: 0.92rem; color: #e2e8f0; margin-bottom: 0.5rem;">
+                            <strong>Extracted:</strong> <code style="word-break: break-all; color: #fbbf24;">{item.raw_payload}</code>
+                        </p>
+                        <p style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 0.6rem;">{nav_dec['display_message']}</p>
+                        <p style="font-size: 0.82rem; color: #f59e0b; font-weight: 600; margin: 0;">⚠️ Safety cannot be verified. Automatic navigation is withheld.</p>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -1516,12 +1940,14 @@ def render_scan_qr_screen() -> None:
                 if db_status.get("success"):
                     st.markdown(
                         f"""
-                        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 8px; padding: 0.6rem 0.9rem; margin-top: 0.8rem; margin-bottom: 0.8rem; display: flex; align-items: center; justify-content: space-between;">
+                        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 8px; padding: 0.6rem 0.9rem; margin-top: 0.8rem; margin-bottom: 0.8rem; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 0 16px rgba(16, 185, 129, 0.12);">
                             <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                <span style="color: #34d399; font-size: 1rem;">✓</span>
-                                <span style="font-size: 0.82rem; color: #cbd5e1;">Persisted to Supabase Database</span>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="20 6 9 17 4 12"></polyline>
+                                </svg>
+                                <span style="font-size: 0.82rem; color: #e2e8f0; font-weight: 500;">Persisted to Supabase Database</span>
                             </div>
-                            <span style="font-family: monospace; font-size: 0.75rem; color: #38bdf8;">Scan ID: {str(db_status.get('scan_id', ''))[:8]}...</span>
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: #38bdf8;">Scan ID: {str(db_status.get('scan_id', ''))[:8]}...</span>
                         </div>
                         """,
                         unsafe_allow_html=True,
@@ -1530,10 +1956,14 @@ def render_scan_qr_screen() -> None:
                     err_msg = db_status.get("error", "Database write error")
                     st.markdown(
                         f"""
-                        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 0.6rem 0.9rem; margin-top: 0.8rem; margin-bottom: 0.8rem;">
+                        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 0.6rem 0.9rem; margin-top: 0.8rem; margin-bottom: 0.8rem; box-shadow: 0 0 16px rgba(239, 68, 68, 0.12);">
                             <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.2rem;">
-                                <span style="color: #f87171; font-size: 1rem;">⚠️</span>
-                                <span style="font-size: 0.82rem; font-weight: 600; color: #f87171;">Database Persistence Failed</span>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                                </svg>
+                                <span style="font-size: 0.82rem; font-weight: 600; color: #f87171;">Database Persistence Notice</span>
                             </div>
                             <div style="font-size: 0.75rem; color: #fca5a5; line-height: 1.4;">{err_msg}</div>
                         </div>
@@ -1602,7 +2032,7 @@ def render_threat_analysis_screen() -> None:
 
     # Hero Verdict Box
     circle_cls = "risk-circle-box" if is_blocked else "risk-circle-box risk-circle-box-safe"
-    hero_cls = "dossier-hero" if is_blocked else "dossier-hero dossier-hero-permitted"
+    hero_cls = "dossier-hero dossier-hero-blocked animate-fade-in-up" if is_blocked else "dossier-hero dossier-hero-permitted animate-fade-in-up"
     badge_html = '<span class="dossier-pill-blocked">CRITICAL THREAT DETECTED • REDIRECTION BLOCKED</span>' if is_blocked else '<span class="dossier-pill-permitted">VERIFIED BENIGN • PERMITTED</span>'
 
     st.markdown(
