@@ -176,22 +176,26 @@ class ThreatPreventionEngine:
 
         # 2. Extract inputs for standard HTTP/HTTPS URLs
         rf_pred = "Unknown"
-        rf_risk = analysis_result.risk_score * 100.0
+        heur_risk = (analysis_result.risk_score or 0.0) * 100.0
         rf_conf = 50.0
         is_model_available = False
 
         if ml_prediction is not None and getattr(ml_prediction, "is_model_available", False):
             rf_pred = ml_prediction.predicted_label
-            rf_risk = ml_prediction.risk_score
-            rf_conf = ml_prediction.confidence
+            ml_risk = float(ml_prediction.risk_score)
+            rf_conf = float(ml_prediction.confidence)
             is_model_available = True
+        else:
+            ml_risk = heur_risk
 
+        # Synthesize composite risk score: both heuristic indicators and ML inference contribute
+        composite_risk = max(heur_risk, ml_risk)
         heur_cat = analysis_result.risk_category
 
         # 3. Discretize into RL State Key
         state_key = encode_state(
             rf_pred=rf_pred,
-            rf_risk_score=rf_risk,
+            rf_risk_score=composite_risk,
             heuristic_category=heur_cat,
             confidence=rf_conf,
             is_model_available=is_model_available,
@@ -215,18 +219,18 @@ class ThreatPreventionEngine:
             safety_rule = "SAFETY_OVERRIDE_MALICIOUS_ML"
 
         # Mandatory Rule B: High risk score or High Heuristic threat must ALWAYS be BLOCKED
-        elif self.safety_config.prevent_allow_on_high_risk and (rf_risk >= self.safety_config.high_risk_threshold or heur_cat == "HIGH") and final_action != "BLOCK":
+        elif self.safety_config.prevent_allow_on_high_risk and (composite_risk >= self.safety_config.high_risk_threshold or heur_cat == "HIGH") and final_action != "BLOCK":
             final_action = "BLOCK"
             is_override = True
-            override_reason = f"Mandatory Security Constraint: High threat score ({rf_risk:.1f}/100) or heuristic HIGH mandates BLOCK."
+            override_reason = f"Mandatory Security Constraint: High threat score ({composite_risk:.1f}/100) or heuristic HIGH mandates BLOCK."
             safety_rule = "SAFETY_OVERRIDE_HIGH_THREAT"
 
         # Conservative Rule C: When unconstrained action is ALLOW, enforce conservative fallbacks
         elif final_action == "ALLOW":
-            if self.safety_config.prevent_allow_on_uncertain_medium and "UNCERTAIN" in state_key and heur_cat == "MEDIUM":
+            if self.safety_config.prevent_allow_on_uncertain_medium and ("UNCERTAIN" in state_key or heur_cat == "MEDIUM" or composite_risk >= 30.0):
                 final_action = "WARN"
                 is_override = True
-                override_reason = "Safety Prudence: Downgraded ALLOW to WARN due to model uncertainty and medium heuristic risk."
+                override_reason = f"Safety Prudence: Downgraded ALLOW to WARN due to elevated risk ({composite_risk:.1f}/100) or heuristic signals."
                 safety_rule = "SAFETY_PRUDENCE_UNCERTAIN"
             elif self.safety_config.prevent_allow_on_unavailable_model and not is_model_available:
                 final_action = "WARN"
@@ -234,7 +238,19 @@ class ThreatPreventionEngine:
                 override_reason = "Safety Prudence: Required ML analysis is unavailable; downgraded ALLOW to WARN following conservative security policy."
                 safety_rule = "SAFETY_PRUDENCE_MODEL_UNAVAILABLE"
 
-        # 6. Formulate Decision Explanation
+        # 6. Enforce Mathematical and Verdict Consistency across Risk Score and Action
+        if final_action == "BLOCK":
+            final_risk = max(70.0, composite_risk)
+            final_pred_class = "Malicious"
+        elif final_action == "WARN":
+            # Suspicious or warned URLs must NEVER have 0/100 risk score! Guaranteed 35-69/100 range.
+            final_risk = max(35.0, min(69.0, composite_risk))
+            final_pred_class = "Suspicious" if is_model_available else "Unverified"
+        else:
+            final_risk = min(29.0, composite_risk)
+            final_pred_class = "Benign"
+
+        # 7. Formulate Decision Explanation
         explanation_parts = []
         if is_override:
             explanation_parts.append(f"Security Policy Intervened: {override_reason}")
@@ -244,15 +260,15 @@ class ThreatPreventionEngine:
         else:
             if final_action == "ALLOW":
                 explanation_parts.append(
-                    f"Proceed Permitted: Low combined risk ({rf_risk:.1f}/100) and clean heuristic indicators support safe navigation."
+                    f"Proceed Permitted: Low combined risk ({final_risk:.1f}/100) and clean heuristic indicators support safe navigation."
                 )
             elif final_action == "WARN":
                 explanation_parts.append(
-                    f"Warning Advisory: Elevated risk ({rf_risk:.1f}/100) or ambiguous feature signals require explicit user confirmation."
+                    f"Warning Advisory: Elevated risk ({final_risk:.1f}/100) or ambiguous feature signals require explicit user confirmation."
                 )
             elif final_action == "BLOCK":
                 explanation_parts.append(
-                    f"Threat Neutralized: Malicious patterns detected (Risk {rf_risk:.1f}/100, Heuristic {heur_cat}). Navigation strictly blocked."
+                    f"Threat Neutralized: Malicious patterns detected (Risk {final_risk:.1f}/100, Heuristic {heur_cat}). Navigation strictly blocked."
                 )
 
         explanation = " ".join(explanation_parts)
@@ -266,8 +282,8 @@ class ThreatPreventionEngine:
             explanation=explanation,
             q_values=q_values,
             safety_rule_applied=safety_rule,
-            risk_score=rf_risk,
-            predicted_class=rf_pred,
+            risk_score=final_risk,
+            predicted_class=final_pred_class,
             heuristic_category=heur_cat,
         )
 
@@ -370,17 +386,33 @@ class ThreatPreventionEngine:
 
         # CASE C: Suspicious or Uncertain
         if decision.final_action == "WARN":
+            caution_url = clean_payload if is_web_url else None
+            is_unverified = (
+                not is_web_url
+                or (ml_prediction is not None and not getattr(ml_prediction, "is_model_available", False))
+                or scheme == "http"
+            )
+            verdict_label = "UNVERIFIED" if is_unverified else "SUSPICIOUS"
+            title = (
+                "⚠️ Unverified Destination: Safety Cannot Be Confidently Established"
+                if is_unverified
+                else "⚠️ Caution: Suspicious Threat Indicators Detected"
+            )
             return {
                 "decision": decision,
                 "is_permitted": False,
                 "open_url": None,
                 "button_label": None,
+                "caution_url": caution_url,
+                "requires_confirmation": True,
                 "status_category": "UNCERTAIN",
+                "verdict": verdict_label,
                 "status_badge_color": "#f59e0b",
-                "display_title": "⚠️ Unverified Destination: Safety Cannot Be Confidently Verified",
+                "display_title": title,
                 "display_message": (
-                    "This URL contains ambiguous security indicators, elevated risk, or required analysis is unavailable. "
-                    "Automatic opening is disabled; returning to scanning is advised."
+                    "This URL exhibits elevated risk, unencrypted transport, or unverified reputation. "
+                    "Automatic direct navigation has been blocked. Review the security indicators below. "
+                    "You may only proceed with explicit user confirmation."
                 ),
                 "detected_indicators": indicators,
                 "is_google_form": is_google_form,
@@ -394,16 +426,22 @@ class ThreatPreventionEngine:
             "is_permitted": True,
             "open_url": clean_payload,
             "button_label": button_text,
+            "caution_url": None,
+            "requires_confirmation": False,
             "status_category": "PERMITTED",
+            "verdict": "SAFE",
             "status_badge_color": "#10b981",
-            "display_title": "🛡️ Permitted Destination (Verified Safe)",
+            "display_title": "🛡️ Permitted Destination: Baseline Security Checks Passed",
             "display_message": (
                 "Combined risk assessment, feature analysis, and heuristic checks support safe navigation. "
                 f"Click '{button_text}' below to open the destination in a new browser tab."
             ),
             "detected_indicators": [],
             "is_google_form": is_google_form,
-            "disclaimer": "A low-risk classification does not guarantee the destination is 100% safe. Always verify credentials before submitting sensitive data.",
+            "disclaimer": (
+                "Zero-Trust Notice: A low-risk classification indicates baseline checks passed, but does not guarantee "
+                "the destination is 100% safe. Always verify credentials before submitting sensitive data."
+            ),
         }
 
     def benchmark_policies(

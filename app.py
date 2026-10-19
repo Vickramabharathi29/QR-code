@@ -1839,7 +1839,7 @@ def render_scan_qr_screen() -> None:
                                     <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
                                     <polyline points="9 12 11 14 15 10"></polyline>
                                 </svg>
-                                <span class="dossier-pill-permitted">VERIFIED SAFE • PERMITTED</span>
+                                <span class="dossier-pill-permitted">BASELINE CHECKS PASSED • PERMITTED</span>
                             </div>
                             <span style="font-size: 0.75rem; color: #34d399; font-weight: 700; font-family: monospace;">RISK: {dec.risk_score:.0f}/100</span>
                         </div>
@@ -1847,20 +1847,24 @@ def render_scan_qr_screen() -> None:
                         <p style="font-size: 0.92rem; color: #e2e8f0; margin-bottom: 0.5rem;">
                             <strong>Destination:</strong> <code style="word-break: break-all; color: #38bdf8;">{item.raw_payload}</code>
                         </p>
-                        <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 1rem;">
+                        <p style="color: #cbd5e1; font-size: 0.85rem; margin-bottom: 0.75rem;">
                             {nav_dec['display_message']}
+                        </p>
+                        <p style="color: #6ee7b7; font-size: 0.78rem; margin-bottom: 1rem; border-left: 2px solid #10b981; padding-left: 0.6rem;">
+                            {nav_dec.get('disclaimer', '')}
                         </p>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
-                st.link_button(
-                    label=nav_dec["button_label"],
-                    url=nav_dec["open_url"],
-                    type="primary",
-                    use_container_width=True,
-                    help="Click to open the verified destination in a new browser tab.",
-                )
+                if nav_dec.get("open_url"):
+                    st.link_button(
+                        label=nav_dec.get("button_label") or "🌐 Open Destination",
+                        url=nav_dec["open_url"],
+                        type="primary",
+                        use_container_width=True,
+                        help="Click to open the destination in a new browser tab.",
+                    )
             elif status_cat == "BLOCKED":
                 ind_list = "".join(f"<li><code>{ind}</code></li>" for ind in nav_dec.get("detected_indicators", []))
                 st.markdown(
@@ -1898,6 +1902,8 @@ def render_scan_qr_screen() -> None:
                     unsafe_allow_html=True,
                 )
             elif status_cat == "UNCERTAIN":
+                verdict_txt = nav_dec.get("verdict", "SUSPICIOUS")
+                warn_inds = "".join(f"<li><code>{ind}</code></li>" for ind in nav_dec.get("detected_indicators", []))
                 st.markdown(
                     f"""
                     <div class="dossier-hero dossier-hero-warn animate-fade-in-up">
@@ -1908,7 +1914,7 @@ def render_scan_qr_screen() -> None:
                                     <line x1="12" y1="9" x2="12" y2="13"></line>
                                     <line x1="12" y1="17" x2="12.01" y2="17"></line>
                                 </svg>
-                                <span class="dossier-pill-warn" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); padding: 0.22rem 0.65rem; border-radius: 6px; font-size: 0.72rem; font-weight: 700;">SUSPICIOUS • CAUTION ADVISED</span>
+                                <span class="dossier-pill-warn" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); padding: 0.22rem 0.65rem; border-radius: 6px; font-size: 0.72rem; font-weight: 700;">{verdict_txt} • CAUTION ADVISED</span>
                             </div>
                             <span style="font-size: 0.75rem; color: #fbbf24; font-weight: 700; font-family: monospace;">RISK: {dec.risk_score:.0f}/100</span>
                         </div>
@@ -1917,11 +1923,34 @@ def render_scan_qr_screen() -> None:
                             <strong>Extracted:</strong> <code style="word-break: break-all; color: #fbbf24;">{item.raw_payload}</code>
                         </p>
                         <p style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 0.6rem;">{nav_dec['display_message']}</p>
+                        <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 0.75rem; margin-bottom: 0.75rem;">
+                            <div style="font-size: 0.8rem; font-weight: 600; color: #fde68a; margin-bottom: 0.3rem;">Observed Risk Indicators:</div>
+                            <ul style="font-size: 0.78rem; color: #fde68a; margin: 0; padding-left: 1.2rem;">
+                                {warn_inds if warn_inds else "<li>Unverified destination without cryptographic reputation confirmation</li>"}
+                            </ul>
+                        </div>
                         <p style="font-size: 0.82rem; color: #f59e0b; font-weight: 600; margin: 0;">⚠️ Safety cannot be verified. Automatic navigation is withheld.</p>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
+                caution_target = nav_dec.get("caution_url") or item.raw_payload
+                if caution_target and (caution_target.startswith("http://") or caution_target.startswith("https://")):
+                    ack_hash = hashlib.md5(caution_target.encode()).hexdigest()[:8]
+                    user_confirmed = st.checkbox(
+                        "⚠️ I understand the security risks and choose to proceed to this external destination.",
+                        key=f"chk_ack_user_nav_{ack_hash}",
+                    )
+                    if user_confirmed:
+                        st.link_button(
+                            label="⚠️ Proceed to External URL (Caution)",
+                            url=caution_target,
+                            type="secondary",
+                            use_container_width=True,
+                            help="Open this unverified or suspicious external URL at your own discretion.",
+                        )
+                    else:
+                        st.info("🔒 Automatic navigation is disabled. Review indicators above and check the acknowledgement to proceed.")
             else:
                 st.markdown(
                     f"""
@@ -2005,7 +2034,12 @@ def render_threat_analysis_screen() -> None:
     # Dossier inspection mode selection
     dossier_mode = st.radio(
         "Dossier Payload Source",
-        ["🚨 Malicious Benchmark Dossier (Chase Phishing)", "🟢 Benign Baseline (Wikipedia)", "📷 Active Scan Payload"],
+        [
+            "🚨 Malicious Benchmark Dossier (Chase Phishing)",
+            "🟢 Benign Baseline (Wikipedia)",
+            "📷 Active Scan Payload",
+            "💾 Supabase Audit Record",
+        ],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -2020,8 +2054,35 @@ def render_threat_analysis_screen() -> None:
         target = "https://www.wikipedia.org"
         risk_score = 4.0
         is_blocked = False
-        title = "Verified Clean Digital Destination"
-        desc = "Cryptographic domain certificates, absence of spoofed tokens, and clean reputation vectors confirm safe navigation."
+        title = "Baseline Verified Destination"
+        desc = "Cryptographic domain certificates, absence of spoofed tokens, and clean reputation vectors passed baseline checks."
+    elif dossier_mode == "💾 Supabase Audit Record":
+        db_scans = fetch_cached_scan_history(limit=50, is_admin=True)
+        if db_scans:
+            scan_labels = [
+                f"{str(s.get('scan_id', ''))[:8]} - {str(s.get('extracted_url', ''))[:35]} [{s.get('predicted_class', 'N/A')}]"
+                for s in db_scans
+            ]
+            sel_idx = st.selectbox(
+                "Select Persisted Scan Event:",
+                range(len(scan_labels)),
+                format_func=lambda i: scan_labels[i],
+                key="sel_dossier_db_record",
+            )
+            chosen = db_scans[sel_idx]
+            target = chosen.get("extracted_url", "")
+            raw_rs = chosen.get("risk_score")
+            risk_score = float(raw_rs) * 100.0 if (raw_rs is not None and float(raw_rs) <= 1.0) else float(raw_rs or 0.0)
+            act = str(chosen.get("prevention_action", "ALLOW")).upper()
+            is_blocked = act in ("BLOCK", "ACTION_BLOCK")
+            title = f"Database Audit Event: {str(chosen.get('scan_id', ''))[:8]}"
+            desc = f"Persisted scan record: Destination '{target}'. Verdict: {chosen.get('predicted_class')}. Enforced Action: {act}. Decision: {chosen.get('decision_reason', 'Automated security analysis')}."
+        else:
+            target = "https://www.google.com"
+            risk_score = 0.0
+            is_blocked = False
+            title = "Database Baseline"
+            desc = "No recorded scans found in Supabase yet. Perform scans in the scanner to inspect here."
     else:
         target = st.session_state.get("target_url") or "https://forms.gle/sampleSurvey123"
         nav_dec = st.session_state.get("nav_decision")
@@ -2033,7 +2094,7 @@ def render_threat_analysis_screen() -> None:
     # Hero Verdict Box
     circle_cls = "risk-circle-box" if is_blocked else "risk-circle-box risk-circle-box-safe"
     hero_cls = "dossier-hero dossier-hero-blocked animate-fade-in-up" if is_blocked else "dossier-hero dossier-hero-permitted animate-fade-in-up"
-    badge_html = '<span class="dossier-pill-blocked">CRITICAL THREAT DETECTED • REDIRECTION BLOCKED</span>' if is_blocked else '<span class="dossier-pill-permitted">VERIFIED BENIGN • PERMITTED</span>'
+    badge_html = '<span class="dossier-pill-blocked">CRITICAL THREAT DETECTED • REDIRECTION BLOCKED</span>' if is_blocked else '<span class="dossier-pill-permitted">BASELINE CHECKS PASSED • PERMITTED</span>'
 
     st.markdown(
         f"""

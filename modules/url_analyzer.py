@@ -52,6 +52,77 @@ SPECIALIZED_SCHEMES = {
     "ssh",
 }
 
+# Recognized high-reputation domains (avoids false-positive flags on legitimate services)
+TRUSTED_ROOT_DOMAINS = {
+    "google.com",
+    "wikipedia.org",
+    "github.com",
+    "microsoft.com",
+    "apple.com",
+    "amazon.com",
+    "paypal.com",
+    "chase.com",
+    "youtube.com",
+    "cloudflare.com",
+    "forms.gle",
+    "docs.google.com",
+    "drive.google.com",
+    "gov",
+    "edu",
+    "mil",
+}
+
+# Parameter names commonly abused in unvalidated open-redirect schemes
+REDIRECT_PARAM_NAMES = {
+    "url",
+    "redirect",
+    "redirect_url",
+    "dest",
+    "destination",
+    "target",
+    "next",
+    "r",
+    "u",
+    "link",
+    "to",
+    "redir",
+    "return_to",
+    "continue",
+    "goto",
+}
+
+# High-profile brands frequently targeted by deceptive quishing and homoglyph attacks
+HIGH_PROFILE_BRANDS = {
+    "paypal",
+    "chase",
+    "apple",
+    "google",
+    "microsoft",
+    "bankofamerica",
+    "wellsfargo",
+    "citibank",
+    "netflix",
+    "amazon",
+    "facebook",
+    "instagram",
+    "binance",
+    "coinbase",
+}
+
+# Known URL shortener services that mask final destination
+URL_SHORTENERS = {
+    "bit.ly",
+    "tinyurl.com",
+    "t.co",
+    "goo.gl",
+    "ow.ly",
+    "is.gd",
+    "buff.ly",
+    "cutt.ly",
+    "rb.gy",
+    "shorturl.at",
+}
+
 
 @dataclass
 class URLAnalysisResult:
@@ -71,6 +142,17 @@ class URLAnalysisResult:
     risk_score: float = 0.0  # 0.0 to 1.0
     risk_indicators: List[str] = field(default_factory=list)
 
+    @property
+    def verdict(self) -> str:
+        """Derive standard threat classification verdict: SAFE, SUSPICIOUS, UNVERIFIED, or MALICIOUS."""
+        if self.status in ("DANGEROUS_SCHEME", "MALFORMED_URL", "MISSING_HOSTNAME") or self.risk_category == "HIGH" or self.risk_score >= 0.70:
+            return "MALICIOUS"
+        if self.risk_category == "MEDIUM" or self.risk_score >= 0.30:
+            return "SUSPICIOUS"
+        if self.scheme == "http" or self.status == "UNSUPPORTED_SCHEME":
+            return "UNVERIFIED"
+        return "SAFE"
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert analysis result to dictionary format."""
         return {
@@ -88,6 +170,7 @@ class URLAnalysisResult:
             "risk_score": self.risk_score,
             "risk_indicators": self.risk_indicators,
             "suspicious_indicators": self.risk_indicators,
+            "verdict": self.verdict,
         }
 
     @property
@@ -306,6 +389,8 @@ class URLAnalyzer:
         features: Dict[str, Union[int, float]],
         status: str,
         hostname: Optional[str] = None,
+        query_params: Optional[Dict[str, List[str]]] = None,
+        normalized_url: Optional[str] = None,
     ) -> Tuple[str, float, List[str]]:
         """Calculate preliminary heuristic risk score and collect indicator reasons.
 
@@ -315,6 +400,8 @@ class URLAnalyzer:
             features: 15 canonical features from FeatureExtractor.
             status: Validation status string.
             hostname: Hostname string for TLD check.
+            query_params: Optional parsed query parameter dictionary.
+            normalized_url: Optional normalized URL string.
 
         Returns:
             Tuple[str, float, List[str]]: (risk_category, risk_score_0_to_1, indicators)
@@ -344,6 +431,15 @@ class URLAnalyzer:
         if status == "PLAIN_TEXT" or status == "EMPTY_PAYLOAD":
             return "LOW", 0.0, ["Plain text payload containing no active web destination."]
 
+        # Check domain reputation against trusted roots
+        clean_host = (hostname or "").lower().strip()
+        is_trusted = False
+        if clean_host:
+            for trusted in TRUSTED_ROOT_DOMAINS:
+                if clean_host == trusted or clean_host.endswith(f".{trusted}"):
+                    is_trusted = True
+                    break
+
         # 2. Hostname is an IP address
         if features.get("is_ip_address", 0) == 1:
             score += 35.0
@@ -354,41 +450,72 @@ class URLAnalyzer:
             score += 25.0
             indicators.append("URL contains '@' symbol (often used to obscure the destination host).")
 
-        # 4. Excessive hyphens in hostname
+        # 4. Brand spoofing / impersonation on untrusted hostnames
+        if clean_host and not is_trusted:
+            for brand in HIGH_PROFILE_BRANDS:
+                if brand in clean_host:
+                    score += 35.0
+                    indicators.append(
+                        f"Deceptive brand impersonation signature detected (domain contains '{brand}' but is not an official {brand} property)."
+                    )
+                    break
+
+        # 5. URL Shorteners
+        if clean_host:
+            for shortener in URL_SHORTENERS:
+                if clean_host == shortener or clean_host.endswith(f".{shortener}"):
+                    score += 25.0
+                    indicators.append(f"Known URL shortener detected ({clean_host}); masks ultimate destination endpoint.")
+                    break
+
+        # 6. Open-redirect query parameters
+        if query_params:
+            for param, vals in query_params.items():
+                if param.lower() in REDIRECT_PARAM_NAMES:
+                    for v in vals:
+                        if "://" in v or v.startswith("//"):
+                            score += 25.0
+                            indicators.append(f"Potential unvalidated open-redirect parameter detected ('{param}={v[:35]}...').")
+                            break
+
+        # 7. Excessive hyphens in hostname (for non-trusted domains)
         num_hyphens = int(features.get("num_hyphens_hostname", 0))
-        if num_hyphens >= 3:
-            score += 20.0
-            indicators.append(f"Excessive hyphens in hostname ({num_hyphens}), typical in brand-spoofing domains.")
-        elif num_hyphens == 2:
-            score += 10.0
-            indicators.append(f"Multiple hyphens in hostname ({num_hyphens}).")
+        if not is_trusted:
+            if num_hyphens >= 3:
+                score += 20.0
+                indicators.append(f"Excessive hyphens in hostname ({num_hyphens}), typical in brand-spoofing domains.")
+            elif num_hyphens == 2:
+                score += 10.0
+                indicators.append(f"Multiple hyphens in hostname ({num_hyphens}).")
 
-        # 5. Excessive subdomains
+        # 8. Excessive subdomains (for non-trusted domains)
         num_sub = int(features.get("num_subdomains", 0))
-        if num_sub >= 3:
-            score += 20.0
-            indicators.append(f"Excessive subdomains ({num_sub}), common in dynamic phishing setups.")
-        elif num_sub == 2:
-            score += 5.0
-            indicators.append(f"Multiple subdomain levels ({num_sub}).")
+        if not is_trusted:
+            if num_sub >= 3:
+                score += 20.0
+                indicators.append(f"Excessive subdomains ({num_sub}), common in dynamic phishing setups.")
+            elif num_sub == 2:
+                score += 5.0
+                indicators.append(f"Multiple subdomain levels ({num_sub}).")
 
-        # 6. High dot count in hostname
+        # 9. High dot count in hostname
         num_dots = int(features.get("num_dots_hostname", 0))
-        if num_dots >= 4:
-            score += 15.0
-            indicators.append(f"High dot count in hostname ({num_dots}).")
+        if not is_trusted:
+            if num_dots >= 4:
+                score += 15.0
+                indicators.append(f"High dot count in hostname ({num_dots}).")
 
-        # 7. Suspicious keywords in URL
+        # 10. Suspicious keywords in URL
         num_kw = int(features.get("num_suspicious_keywords", 0))
-        if num_kw > 0:
+        if num_kw > 0 and not is_trusted:
             kw_points = min(30.0, num_kw * 10.0)
             score += kw_points
             indicators.append(f"Detected {num_kw} high-risk keyword(s) (e.g. login, verify, account, banking).")
 
-        # 8. High-risk TLD check
-        if hostname:
+        # 11. High-risk TLD check
+        if clean_host and not is_trusted:
             try:
-                extracted = tldextract.extract(hostname)
+                extracted = tldextract.extract(clean_host)
                 tld = (extracted.suffix or "").lower()
                 if tld in self.suspicious_tlds:
                     score += 20.0
@@ -396,12 +523,12 @@ class URLAnalyzer:
             except Exception:
                 pass
 
-        # 9. Hexadecimal percent-encoding
+        # 12. Hexadecimal percent-encoding
         if features.get("has_url_encoding", 0) == 1:
             score += 10.0
             indicators.append("URL-encoding (%xx) detected, potentially masking redirected endpoints.")
 
-        # 10. Excessive length
+        # 13. Excessive length
         url_len = int(features.get("url_length", 0))
         if url_len > 120:
             score += 15.0
@@ -410,12 +537,16 @@ class URLAnalyzer:
             score += 5.0
             indicators.append(f"Elevated URL length ({url_len} characters).")
 
-        # 11. Insecure HTTP cleartext protocol
+        # 14. Insecure HTTP cleartext protocol
         if features.get("is_https", 0) == 0:
-            score += 10.0
-            indicators.append("Insecure HTTP protocol (unencrypted connection; vulnerable to eavesdropping).")
+            score += 15.0
+            indicators.append("Insecure HTTP protocol (unencrypted cleartext connection; vulnerable to interception).")
         else:
-            indicators.append("HTTPS protocol in use (note: SSL encryption does not guarantee domain legitimacy).")
+            indicators.append("HTTPS transport encryption in use (note: SSL encryption does not guarantee domain legitimacy).")
+
+        # Reputable domain discount: cap baseline score for trusted platforms
+        if is_trusted and score > 20.0:
+            score = 15.0
 
         # Clamp score to [0.0, 100.0] and scale to [0.0, 1.0]
         final_score_100 = max(0.0, min(100.0, score))
@@ -465,6 +596,8 @@ class URLAnalyzer:
             features=features,
             status=status,
             hostname=hostname,
+            query_params=query_dict,
+            normalized_url=normalized,
         )
 
         return URLAnalysisResult(

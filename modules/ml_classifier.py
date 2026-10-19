@@ -309,12 +309,16 @@ class MaliciousURLClassifier:
 
         # 2. Run model inference
         X_sample = np.array([feature_vector], dtype=float)
-        pred_class = int(self.model.predict(X_sample)[0])
         pred_probs = self.model.predict_proba(X_sample)[0]
 
         prob_benign = float(pred_probs[0])
         prob_malicious = float(pred_probs[1]) if len(pred_probs) > 1 else 0.0
 
+        # Calibrated threshold: Require at least 0.65 malicious probability to definitively classify as Malicious.
+        # Moderate probabilities (0.35 - 0.64) are treated as Benign/Elevated risk,
+        # preventing unfamiliar benign domains (e.g. unencrypted local HTTP) from being automatically hard-blocked.
+        MALICIOUS_PROBABILITY_THRESHOLD = 0.65
+        pred_class = 1 if prob_malicious >= MALICIOUS_PROBABILITY_THRESHOLD else 0
         predicted_label = "Malicious" if pred_class == 1 else "Benign"
         risk_score = round(prob_malicious * 100.0, 1)
         confidence = round(max(prob_benign, prob_malicious) * 100.0, 1)
