@@ -121,7 +121,7 @@ class QRScanResult:
 
 
 def classify_payload(payload: str) -> Tuple[str, bool, Optional[str]]:
-    """Classify decoded payload into HTTP/HTTPS URL, Dangerous URI, Specialized URI, or Plain Text.
+    """Classify decoded payload into HTTP/HTTPS URL, Dangerous URI, Contact, Wi-Fi, Payment, or Plain Text.
 
     Does not send network requests or execute payload content.
 
@@ -131,19 +131,44 @@ def classify_payload(payload: str) -> Tuple[str, bool, Optional[str]]:
     Returns:
         Tuple[str, bool, Optional[str]]: (payload_type, is_url, scheme)
     """
-    clean = payload.strip()
+    clean = (payload or "").strip()
     if not clean:
         return "EMPTY", False, None
 
-    # Check for direct protocol schemes
     lower_payload = clean.lower()
-    
-    # Check if string starts with dangerous schemes
+
+    # 1. Contact Details: vCard and meCard
+    if clean.upper().startswith("BEGIN:VCARD") or clean.upper().startswith("MECARD:"):
+        return "SPECIALIZED_SCHEME", False, "vcard"
+
+    # 2. Wi-Fi Configuration
+    if clean.upper().startswith("WIFI:"):
+        return "SPECIALIZED_SCHEME", False, "wifi"
+
+    # 3. Cryptocurrency & Payment Payloads
+    payment_schemes = ("upi", "bitcoin", "ethereum", "solana", "lightning", "bitcoincash")
+    for ps in payment_schemes:
+        if lower_payload.startswith(f"{ps}:") or lower_payload.startswith(f"{ps}://"):
+            return "SPECIALIZED_SCHEME", False, ps
+
+    if "paypal.me/" in lower_payload:
+        # PayPal.me web payment link
+        return "PAYMENT_PAYLOAD", True, "https" if lower_payload.startswith("https") else "http"
+
+    # 4. Email, Phone, SMS, Geo
+    if lower_payload.startswith("mailto:"):
+        return "SPECIALIZED_SCHEME", False, "mailto"
+    if lower_payload.startswith(("tel:", "sms:", "smsto:")):
+        return "SPECIALIZED_SCHEME", False, lower_payload.split(":")[0]
+    if lower_payload.startswith("geo:"):
+        return "SPECIALIZED_SCHEME", False, "geo"
+
+    # 5. Check if string starts with dangerous schemes
     for dangerous_scheme in DANGEROUS_SCHEMES:
         if lower_payload.startswith(f"{dangerous_scheme}:"):
             return "DANGEROUS_SCHEME", False, dangerous_scheme
 
-    # Check for HTTP / HTTPS URLs
+    # 6. Check for HTTP / HTTPS URLs
     try:
         parsed = urlparse(clean)
         scheme = (parsed.scheme or "").lower()

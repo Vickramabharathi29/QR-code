@@ -111,7 +111,7 @@ class TestURLVerificationHeuristics:
         """Test that brand impersonation in untrusted domains is flagged."""
         spoofed_url = "https://chase-security-verify-login.net/account"
         result = analyze_url(spoofed_url)
-        assert result.risk_category in ("MEDIUM", "HIGH")
+        assert result.risk_category in ("MEDIUM", "HIGH", "CRITICAL")
         assert result.risk_score >= 0.35
         assert any("brand impersonation" in ind.lower() or "chase" in ind.lower() for ind in result.risk_indicators)
 
@@ -240,3 +240,121 @@ class TestSupabasePersistenceVerification:
 
         # Must report failure honestly (None) rather than pretending success
         assert result is None
+
+
+class TestCanonicalRiskScoringAndGoogleForms:
+    """Validate canonical risk thresholds, Google Forms, and equivalent service scoring."""
+
+    def test_google_forms_standard_viewform_low_risk(self, engine: ThreatPreventionEngine):
+        """Standard Google Forms URL receives low risk score (0-19) and ALLOW action."""
+        url = "https://docs.google.com/forms/d/e/1FAIpQLScP_7FjM5Y9z8nK1l4wX8yA0vE9qT1/viewform"
+        ana = analyze_url(url)
+        ml = predict_url(url)
+        nav = engine.evaluate_navigation_decision(url, "URL_HTTPS", ana, ml)
+        dec = nav["decision"]
+
+        # Canonical Low Risk: 0-19 scale
+        assert 0.0 <= dec.risk_score <= 19.0, f"Expected 0-19, got {dec.risk_score}"
+        assert dec.final_action == "ALLOW"
+        assert nav["is_permitted"] is True
+        assert nav["status_category"] == "PERMITTED"
+        assert nav["verdict"] == "SAFE"
+        assert nav["open_url"] == url
+        assert "Google Form" in nav.get("button_label", "")
+
+    def test_google_forms_with_query_params_not_penalized(self, engine: ThreatPreventionEngine):
+        """Google Forms with query parameters and long path does not get penalized into suspicious tier."""
+        url = "https://docs.google.com/forms/d/e/1FAIpQLScP_7FjM5Y9z8nK1l4wX8yA0vE9qT1/viewform?usp=sf_link"
+        ana = analyze_url(url)
+        ml = predict_url(url)
+        nav = engine.evaluate_navigation_decision(url, "URL_HTTPS", ana, ml)
+        dec = nav["decision"]
+
+        # Must NOT be 35.0 or suspicious
+        assert dec.risk_score != 35.0
+        assert 0.0 <= dec.risk_score <= 19.0, f"Expected low risk 0-19, got {dec.risk_score}"
+        assert dec.final_action == "ALLOW"
+        assert nav["is_permitted"] is True
+        assert nav["status_category"] == "PERMITTED"
+
+    def test_google_forms_shortlink_low_risk(self, engine: ThreatPreventionEngine):
+        """Shortened forms.gle link receives low risk (0-19) and ALLOW action."""
+        url = "https://forms.gle/7w5yBwJ5qC3h8k9A6"
+        ana = analyze_url(url)
+        ml = predict_url(url)
+        nav = engine.evaluate_navigation_decision(url, "URL_HTTPS", ana, ml)
+        dec = nav["decision"]
+
+        assert 0.0 <= dec.risk_score <= 19.0
+        assert dec.final_action == "ALLOW"
+        assert nav["is_permitted"] is True
+        assert nav["status_category"] == "PERMITTED"
+
+    def test_equivalent_validation_for_other_legitimate_services(self, engine: ThreatPreventionEngine):
+        """Verify equivalent low-risk classification for other legitimate forms and platforms (no Google-only whitelist)."""
+        benign_services = [
+            "https://forms.office.com/pages/responsepage.aspx?id=v4j5cvGGr0GRqy180BHbR",
+            "https://form.typeform.com/to/sampleForm123?utm_source=newsletter",
+            "https://www.surveymonkey.com/r/SampleFeedbackSurvey2026",
+            "https://github.com/torvalds/linux/blob/master/include/linux/kernel.h",
+            "https://en.wikipedia.org/wiki/Computer_security",
+            "https://www.google.com",
+        ]
+        for url in benign_services:
+            ana = analyze_url(url)
+            ml = predict_url(url)
+            nav = engine.evaluate_navigation_decision(url, "URL_HTTPS", ana, ml)
+            dec = nav["decision"]
+            assert 0.0 <= dec.risk_score <= 19.0, f"Failed for {url}: score was {dec.risk_score}"
+            assert dec.final_action == "ALLOW", f"Failed for {url}: action was {dec.final_action}"
+            assert nav["is_permitted"] is True, f"Failed for {url}: not permitted"
+
+    def test_lookalike_brand_impersonation_blocked(self, engine: ThreatPreventionEngine):
+        """Deceptive lookalike domains must be blocked in High or Critical tiers (>=50)."""
+        lookalikes = [
+            ("http://paypal-security-update-verification.com/login/verify.php?token=123", "URL_HTTP"),
+            ("https://chase-security-verify-login.net/account", "URL_HTTPS"),
+            ("http://appleid-security-warning.support-device.cf/confirm?id=99281", "URL_HTTP"),
+        ]
+        for url, ptype in lookalikes:
+            ana = analyze_url(url)
+            ml = predict_url(url)
+            nav = engine.evaluate_navigation_decision(url, ptype, ana, ml)
+            dec = nav["decision"]
+            assert dec.final_action == "BLOCK", f"Failed to block {url}"
+            assert dec.risk_score >= 50.0, f"Expected >=50, got {dec.risk_score} for {url}"
+            assert nav["is_permitted"] is False
+            assert nav["status_category"] == "BLOCKED"
+
+    def test_open_redirect_attack_flagged_even_on_trusted_host(self, engine: ThreatPreventionEngine):
+        """Open redirect attacks on trusted or external hosts are not declared safe based solely on domain."""
+        redirect_urls = [
+            ("https://example.com/login?redirect=https://attacker.evil.com/harvest", "URL_HTTPS"),
+            ("https://www.google.com/url?q=https://malicious-site.tk", "URL_HTTPS"),
+        ]
+        for url, ptype in redirect_urls:
+            ana = analyze_url(url)
+            ml = predict_url(url)
+            nav = engine.evaluate_navigation_decision(url, ptype, ana, ml)
+            dec = nav["decision"]
+            # Must NOT be allowed with 0 risk score simply because domain is recognized
+            assert dec.risk_score >= 20.0, f"Open redirect on {url} had too low risk: {dec.risk_score}"
+            assert dec.final_action in ("WARN", "BLOCK")
+            assert nav["is_permitted"] is False
+
+    def test_dangerous_schemes_and_malformed_urls_blocked(self, engine: ThreatPreventionEngine):
+        """Dangerous protocols and malformed URLs receive Critical risk (80-100) and BLOCK."""
+        dangerous_targets = [
+            ("javascript:alert(1)", "DANGEROUS_SCHEME"),
+            ("data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==", "DANGEROUS_SCHEME"),
+            ("http://", "URL_HTTP"),
+        ]
+        for payload, ptype in dangerous_targets:
+            ana = analyze_url(payload)
+            ml = predict_url(payload) if ptype in ("URL_HTTP", "URL_HTTPS") and ana.status != "MALFORMED" else None
+            nav = engine.evaluate_navigation_decision(payload, ptype, ana, ml)
+            dec = nav["decision"]
+            assert dec.final_action == "BLOCK"
+            assert dec.risk_score >= 80.0
+            assert nav["is_permitted"] is False
+            assert nav["open_url"] is None

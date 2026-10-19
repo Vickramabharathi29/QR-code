@@ -41,9 +41,12 @@ htmlcov/
 models/*.pkl
 models/*.joblib
 models/*.json
+!models/model_metadata.json
+!models/q_table.json
 !models/README.md
 !models/.gitkeep
 data/*.csv
+!data/sample_urls.csv
 data/*.json
 !data/README.md
 !data/.gitkeep

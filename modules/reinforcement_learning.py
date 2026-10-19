@@ -90,17 +90,18 @@ def encode_state(
         rf_cat = "BENIGN"
 
     # 2. Risk Score Bin
+    # Aligned with canonical thresholds: 0-19 LOW, 20-49 MED, >=50 HIGH/CRITICAL
     score = float(rf_risk_score) if rf_risk_score is not None else 50.0
-    if score < 30.0:
+    if score < 20.0:
         risk_bin = "LOW"
-    elif score <= 70.0:
+    elif score < 50.0:
         risk_bin = "MED"
     else:
         risk_bin = "HIGH"
 
     # 3. Heuristic Category
     heur_norm = str(heuristic_category).strip().upper()
-    if "HIGH" in heur_norm:
+    if "CRITICAL" in heur_norm or "HIGH" in heur_norm:
         heur_cat = "HIGH"
     elif "MED" in heur_norm:
         heur_cat = "MEDIUM"

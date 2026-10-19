@@ -1,0 +1,81 @@
+{
+  "model_type": "RandomForestClassifier",
+  "model_version": "v1.0.0",
+  "training_timestamp": "2026-10-19T06:27:24.914444+00:00",
+  "n_estimators": 100,
+  "max_depth": 10,
+  "random_state": 42,
+  "feature_names": [
+    "url_length",
+    "hostname_length",
+    "num_dots_hostname",
+    "num_subdomains",
+    "is_https",
+    "is_ip_address",
+    "has_at_symbol",
+    "num_hyphens_hostname",
+    "num_digits_hostname",
+    "num_suspicious_keywords",
+    "num_special_chars",
+    "path_length",
+    "num_query_params",
+    "has_url_encoding",
+    "has_unusual_scheme"
+  ],
+  "feature_importances": {
+    "url_length": 0.0781,
+    "hostname_length": 0.1608,
+    "num_dots_hostname": 0.0396,
+    "num_subdomains": 0.0619,
+    "is_https": 0.1774,
+    "is_ip_address": 0.0041,
+    "has_at_symbol": 0.0016,
+    "num_hyphens_hostname": 0.2107,
+    "num_digits_hostname": 0.0361,
+    "num_suspicious_keywords": 0.1312,
+    "num_special_chars": 0.026,
+    "path_length": 0.0668,
+    "num_query_params": 0.0043,
+    "has_url_encoding": 0.0015,
+    "has_unusual_scheme": 0.0
+  },
+  "dataset_info": {
+    "source": "sample_urls.csv",
+    "total_samples": 214,
+    "train_samples": 160,
+    "test_samples": 54,
+    "class_balance": {
+      "benign": 114,
+      "malicious": 100
+    },
+    "disclaimer": "Trained on curated sample data for development testing. Production deployment requires enterprise threat feeds."
+  },
+  "evaluation_metrics": {
+    "accuracy": 0.963,
+    "precision": 0.9259,
+    "recall": 1.0,
+    "f1_score": 0.9615,
+    "roc_auc": 0.9945,
+    "confusion_matrix": {
+      "tn": 27,
+      "fp": 2,
+      "fn": 0,
+      "tp": 25,
+      "matrix": [
+        [
+          27,
+          2
+        ],
+        [
+          0,
+          25
+        ]
+      ]
+    },
+    "dataset_summary": {
+      "total_samples": 54,
+      "benign_samples": 29,
+      "malicious_samples": 25
+    }
+  }
+}

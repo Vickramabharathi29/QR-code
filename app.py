@@ -1699,7 +1699,7 @@ def render_scan_qr_screen() -> None:
                         auth_name = current_user.get("full_name")
 
                         decision_obj = nav_dec["decision"]
-                        pred_label = "MALICIOUS" if decision_obj.final_action == "BLOCK" else ("SAFE" if decision_obj.final_action == "ALLOW" else "SUSPICIOUS")
+                        pred_label = getattr(decision_obj, "classification", None) or ("MALICIOUS" if decision_obj.final_action == "BLOCK" else ("SAFE" if decision_obj.final_action == "ALLOW" else "SUSPICIOUS"))
                         state_key = getattr(decision_obj, "state_key", None) or f"STATE:{pred_label}"
                         raw_action = getattr(decision_obj, "raw_action", None) or decision_obj.final_action
                         final_action = decision_obj.final_action
@@ -2124,8 +2124,8 @@ def render_threat_analysis_screen() -> None:
                         <div class="risk-circle-score">{risk_score:.0f}</div>
                         <div class="risk-circle-label">/ 100 RISK</div>
                     </div>
-                    <div style="margin-top: 0.6rem; font-size: 0.82rem; font-weight: 700; color: {'#f87171' if is_blocked else '#34d399'};">
-                        {'SEVERE PHISHING' if is_blocked else 'LOW RISK'}
+                    <div style="margin-top: 0.6rem; font-size: 0.82rem; font-weight: 700; color: {'#dc2626' if risk_score >= 80 else ('#ef4444' if risk_score >= 50 else ('#f59e0b' if risk_score >= 20 else '#34d399'))};">
+                        {'CRITICAL RISK' if risk_score >= 80 else ('HIGH RISK' if risk_score >= 50 else ('SUSPICIOUS' if risk_score >= 20 else 'LOW RISK'))}
                     </div>
                 </div>
             </div>
@@ -2332,16 +2332,14 @@ def render_threat_analytics_screen() -> None:
             """,
             unsafe_allow_html=True,
         )
-        bins = ["00-10 Clean", "11-30 Low Risk", "31-50 Neutral", "51-70 Suspicious", "71-85 Cloaked", "86-100 Harvester"]
+        bins = ["0–19 Low Risk", "20–49 Suspicious", "50–79 High Risk", "80–100 Critical Risk"]
         bin_counts = [
-            sum(1 for r in risk_scores if 0.0 <= r <= 10.0),
-            sum(1 for r in risk_scores if 10.0 < r <= 30.0),
-            sum(1 for r in risk_scores if 30.0 < r <= 50.0),
-            sum(1 for r in risk_scores if 50.0 < r <= 70.0),
-            sum(1 for r in risk_scores if 70.0 < r <= 85.0),
-            sum(1 for r in risk_scores if 85.0 < r <= 100.0),
+            sum(1 for r in risk_scores if 0.0 <= r < 20.0),
+            sum(1 for r in risk_scores if 20.0 <= r < 50.0),
+            sum(1 for r in risk_scores if 50.0 <= r < 80.0),
+            sum(1 for r in risk_scores if 80.0 <= r <= 100.0),
         ]
-        colors = ["#10b981", "#38bdf8", "#0284c7", "#64748b", "#f59e0b", "#ef4444"]
+        colors = ["#10b981", "#f59e0b", "#f97316", "#ef4444"]
         fig_bins = go.Figure(data=[go.Bar(x=bins, y=bin_counts, marker_color=colors)])
         fig_bins.update_layout(
             paper_bgcolor="rgba(0,0,0,0)",

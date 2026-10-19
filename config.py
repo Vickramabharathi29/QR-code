@@ -171,6 +171,18 @@ SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg"]
 URL_TIMEOUT = int(os.getenv("URL_TIMEOUT_SECONDS", "10"))
 MAX_REDIRECTS = int(os.getenv("MAX_REDIRECTS", "10"))
 
+# Threat Intelligence Providers Configuration
+GOOGLE_SAFE_BROWSING_API_KEY = get_setting("GOOGLE_SAFE_BROWSING_API_KEY", "")
+VIRUSTOTAL_API_KEY = get_setting("VIRUSTOTAL_API_KEY", "")
+URLHAUS_API_KEY = get_setting("URLHAUS_API_KEY", "")
+THREAT_INTEL_TIMEOUT = float(os.getenv("THREAT_INTEL_TIMEOUT_SECONDS", "3.0"))
+THREAT_INTEL_CACHE_TTL = int(os.getenv("THREAT_INTEL_CACHE_TTL_SECONDS", "900"))
+
+# Safe Bounded Live Redirect Analysis
+ENABLE_LIVE_REDIRECT_CHECK = os.getenv("ENABLE_LIVE_REDIRECT_CHECK", "True").lower() in ("true", "1", "yes")
+LIVE_REDIRECT_MAX_HOPS = int(os.getenv("LIVE_REDIRECT_MAX_HOPS", "5"))
+LIVE_REDIRECT_TIMEOUT = float(os.getenv("LIVE_REDIRECT_TIMEOUT_SECONDS", "3.0"))
+
 # Heuristic Suspicious Indicators
 DEFAULT_SUSPICIOUS_KEYWORDS = [
     "login", "verify", "account", "update", "banking", "secure", "wallet",
@@ -181,8 +193,18 @@ DEFAULT_SUSPICIOUS_KEYWORDS = [
 DEFAULT_SUSPICIOUS_TLDS = [
     "tk", "ml", "ga", "cf", "gq", "top", "xyz", "work", "click", "buzz", "fit", "surf"
 ]
-HEURISTIC_RISK_LOW_MAX = 30.0
-HEURISTIC_RISK_MED_MAX = 60.0
+# Canonical Threat & Risk Thresholds (0-100 Scale)
+# 0–19: Low risk (Permitted destination)
+# 20–49: Suspicious (Further verification required, confirmation needed)
+# 50–79: High risk (Quarantined / blocked)
+# 80–100: Critical risk (Severe exploit / malicious / blocked)
+RISK_THRESHOLD_LOW_MAX = 19.0
+RISK_THRESHOLD_SUSPICIOUS_MAX = 49.0
+RISK_THRESHOLD_HIGH_MAX = 79.0
+
+HEURISTIC_RISK_LOW_MAX = 19.0
+HEURISTIC_RISK_MED_MAX = 49.0
+HEURISTIC_RISK_HIGH_MAX = 79.0
 
 # Machine Learning Classifier Constants
 DEFAULT_RF_MODEL_PATH = MODELS_DIR / "random_forest_model.pkl"
@@ -190,8 +212,8 @@ ML_CLASSES = {
     0: "SAFE",
     1: "MALICIOUS"
 }
-RISK_THRESHOLD_HIGH = 0.70
-RISK_THRESHOLD_MEDIUM = 0.40
+RISK_THRESHOLD_HIGH = 0.50
+RISK_THRESHOLD_MEDIUM = 0.20
 
 # Reinforcement Learning (Q-Learning) Hyperparameters
 DEFAULT_Q_TABLE_PATH = MODELS_DIR / "q_table.json"
